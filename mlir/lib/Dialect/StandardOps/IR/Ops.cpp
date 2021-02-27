@@ -3306,6 +3306,11 @@ static void replaceWithNewOp(PatternRewriter &rewriter, SubTensorOp op,
   rewriter.replaceOpWithNewOp<tensor::CastOp>(op, op.getType(), newOp);
 }
 
+static void replaceWithNewOp(PatternRewriter &rewriter, SubTensorInsertOp op,
+                             SubTensorInsertOp newOp) {
+  rewriter.replaceOpWithNewOp<tensor::CastOp>(op, op.getType(), newOp);
+}
+
 /// Pattern to rewrite a subview op with constant arguments.
 template <typename OpType>
 class OpWithOffsetSizesAndStridesConstantArgumentFolder final
@@ -3793,6 +3798,97 @@ OpFoldResult SubTensorInsertOp::fold(ArrayRef<Attribute>) {
   if (succeeded(tensor::foldTensorCast(*this)))
     return this->source();
   return OpFoldResult();
+}
+
+namespace {
+
+/// Pattern to rewrite a subview op with constant arguments.
+class SubTensorInsertOpConstantArgumentFolder final
+    : public OpRewritePattern<SubTensorInsertOp> {
+public:
+  using OpRewritePattern<SubTensorInsertOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SubTensorInsertOp subTensorInsertOp,
+                                PatternRewriter &rewriter) const override {
+    // No constant operand, just return;
+    if (llvm::none_of(subTensorInsertOp.getOperands(), [](Value operand) {
+          return matchPattern(operand, m_ConstantIndex());
+        }))
+      return failure();
+
+    // At least one of offsets/sizes/strides is a new constant.
+    // Form the new list of operands and constant attributes from the existing.
+    SmallVector<OpFoldResult> mixedOffsets(subTensorInsertOp.getMixedOffsets());
+    SmallVector<OpFoldResult> mixedSizes(subTensorInsertOp.getMixedSizes());
+    SmallVector<OpFoldResult> mixedStrides(subTensorInsertOp.getMixedStrides());
+    canonicalizeSubViewPart(mixedOffsets, ShapedType::isDynamicStrideOrOffset);
+    canonicalizeSubViewPart(mixedSizes, ShapedType::isDynamic);
+    canonicalizeSubViewPart(mixedStrides, ShapedType::isDynamicStrideOrOffset);
+
+    // Create the new op in canonical form.
+    Value source = subTensorInsertOp.source();
+    RankedTensorType sourceType = source.getType().cast<RankedTensorType>();
+    SmallVector<int64_t, 4> shape = llvm::to_vector<4>(
+        llvm::map_range(mixedSizes, [](OpFoldResult valueOrAttr) -> int64_t {
+          auto attr = valueOrAttr.dyn_cast<Attribute>();
+          if (!attr)
+            return ShapedType::kDynamicSize;
+          return attr.cast<IntegerAttr>().getInt();
+        }));
+    RankedTensorType newSourceType =
+        RankedTensorType::get(shape, sourceType.getElementType());
+    Location loc = subTensorInsertOp.getLoc();
+    if (sourceType != newSourceType) {
+      source = rewriter.create<tensor::CastOp>(loc, newSourceType, source);
+    }
+    rewriter.replaceOpWithNewOp<SubTensorInsertOp>(
+        subTensorInsertOp, source, subTensorInsertOp.dest(), mixedOffsets,
+        mixedSizes, mixedStrides);
+    return success();
+  }
+};
+
+/// Fold tensor_casts with subtensor_insert operations.
+struct SubTensorInsertOpCastFolder final
+    : public OpRewritePattern<SubTensorInsertOp> {
+  using OpRewritePattern<SubTensorInsertOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SubTensorInsertOp subTensorOp,
+                                PatternRewriter &rewriter) const override {
+    if (llvm::any_of(subTensorOp.getOperands(), [](Value operand) {
+          return matchPattern(operand, m_ConstantIndex());
+        }))
+      return failure();
+
+    auto getSourceOfCastOp = [](Value v) -> Optional<Value> {
+      auto castOp = v.getDefiningOp<tensor::CastOp>();
+      if (!castOp || !canFoldIntoConsumerOp(castOp))
+        return llvm::None;
+      return castOp.source();
+    };
+    Optional<Value> sourceCastSource = getSourceOfCastOp(subTensorOp.source());
+    Optional<Value> destCastSource = getSourceOfCastOp(subTensorOp.dest());
+    if (!sourceCastSource && !destCastSource &&
+        subTensorOp.dest().getType() == subTensorOp.getResult().getType())
+      return failure();
+
+    replaceWithNewOp(
+        rewriter, subTensorOp,
+        rewriter.create<SubTensorInsertOp>(
+            subTensorOp.getLoc(),
+            (sourceCastSource ? *sourceCastSource : subTensorOp.source()),
+            (destCastSource ? *destCastSource : subTensorOp.dest()),
+            subTensorOp.getMixedOffsets(), subTensorOp.getMixedSizes(),
+            subTensorOp.getMixedStrides()));
+    return success();
+  }
+};
+} // namespace
+
+void SubTensorInsertOp::getCanonicalizationPatterns(
+    OwningRewritePatternList &results, MLIRContext *context) {
+  results.insert<SubTensorInsertOpConstantArgumentFolder,
+                 SubTensorInsertOpCastFolder>(context);
 }
 
 //===----------------------------------------------------------------------===//
