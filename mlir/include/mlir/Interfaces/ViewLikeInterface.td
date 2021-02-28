@@ -179,6 +179,20 @@ def OffsetSizeAndStrideOpInterface : OpInterface<"OffsetSizeAndStrideOpInterface
     >,
     InterfaceMethod<
       /*desc=*/[{
+        Return a vector of all the static or dynamic offsets of the op
+        as Values
+      }],
+      /*retTy=*/"::mlir::SmallVector<::mlir::Value, 4>",
+      /*methodName=*/"getOffsetsAsValues",
+      /*args=*/(ins "OpBuilder &":$b, "Location":$loc),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return getOperandsOrIntegersOffsetsOrStridesListAsValues(
+            b, loc, $_op.offsets(), $_op.static_offsets());
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
         Return a vector of all the static or dynamic sizes of the op.
       }],
       /*retTy=*/"::mlir::SmallVector<::mlir::OpFoldResult, 4>",
@@ -200,6 +214,20 @@ def OffsetSizeAndStrideOpInterface : OpInterface<"OffsetSizeAndStrideOpInterface
     >,
     InterfaceMethod<
       /*desc=*/[{
+        Return a vector of all the static or dynamic sizes of the op
+        as Values
+      }],
+      /*retTy=*/"::mlir::SmallVector<::mlir::Value, 4>",
+      /*methodName=*/"getSizesAsValues",
+      /*args=*/(ins "OpBuilder &":$b, "Location":$loc),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return getOperandsOrIntegersSizesListAsValues(
+            b, loc, $_op.sizes(), $_op.static_sizes());
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
         Return a vector of all the static or dynamic strides of the op.
       }],
       /*retTy=*/"::mlir::SmallVector<::mlir::OpFoldResult, 4>",
@@ -217,6 +245,20 @@ def OffsetSizeAndStrideOpInterface : OpInterface<"OffsetSizeAndStrideOpInterface
             res.push_back($_op.static_strides()[idx]);
         }
         return res;
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
+        Return a vector of all the static or dynamic strides of the op
+        as Values
+      }],
+      /*retTy=*/"::mlir::SmallVector<::mlir::Value, 4>",
+      /*methodName=*/"getStridesAsValues",
+      /*args=*/(ins "OpBuilder &":$b, "Location":$loc),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return getOperandsOrIntegersOffsetsOrStridesListAsValues(
+            b, loc, $_op.strides(), $_op.static_strides());
       }]
     >,
 

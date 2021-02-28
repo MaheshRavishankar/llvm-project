@@ -8,6 +8,7 @@
 
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
+#include "mlir/Dialect/StandardOps/IR/Ops.h"
 using namespace mlir;
 
 //===----------------------------------------------------------------------===//
@@ -16,6 +17,35 @@ using namespace mlir;
 
 /// Include the definitions of the loop-like interfaces.
 #include "mlir/Interfaces/ViewLikeInterface.cpp.inc"
+
+template <int64_t dynVal>
+static SmallVector<Value, 4>
+getOperandsOrIntegersListAsValues(OpBuilder &b, Location loc,
+                                  OperandRange values, ArrayAttr integers) {
+  SmallVector<Value, 4> allValues;
+  unsigned dynamicOperandNum = 0;
+  for (auto integerValue : llvm::map_range(integers, [](Attribute attr) {
+         return attr.cast<IntegerAttr>().getInt();
+       })) {
+    if (integerValue != dynVal) {
+      allValues.push_back(b.create<ConstantIndexOp>(loc, integerValue));
+    } else {
+      allValues.push_back(values[dynamicOperandNum++]);
+    }
+  }
+  return allValues;
+}
+
+SmallVector<Value, 4> mlir::getOperandsOrIntegersOffsetsOrStridesListAsValues(
+    OpBuilder &b, Location loc, OperandRange values, ArrayAttr integers) {
+  return getOperandsOrIntegersListAsValues<ShapedType::kDynamicStrideOrOffset>(
+      b, loc, values, integers);
+}
+SmallVector<Value, 4> mlir::getOperandsOrIntegersSizesListAsValues(
+    OpBuilder &b, Location loc, OperandRange values, ArrayAttr integers) {
+  return getOperandsOrIntegersListAsValues<ShapedType::kDynamicSize>(
+      b, loc, values, integers);
+}
 
 LogicalResult mlir::verifyListOfOperandsOrIntegers(
     Operation *op, StringRef name, unsigned maxNumElements, ArrayAttr attr,

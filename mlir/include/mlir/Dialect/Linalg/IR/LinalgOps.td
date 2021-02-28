@@ -256,6 +256,14 @@ def Linalg_PadTensorOp : Linalg_Op<"pad_tensor",
     SmallVector<OpFoldResult> getMixedHighPad() {
       return getMixedPadImpl(static_high(), high());
     }
+    SmallVector<Value, 4> getLowPadAsValues(OpBuilder &b, Location loc) {
+      return getOperandsOrIntegersSizesListAsValues(b, loc, low(),
+          static_low());
+    }
+    SmallVector<Value, 4> getHighPadAsValues(OpBuilder &b, Location loc) {
+      return getOperandsOrIntegersSizesListAsValues(b, loc, high(),
+          static_high());
+    }
   }];
 
   let builders = [

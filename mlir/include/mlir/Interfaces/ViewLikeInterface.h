@@ -30,6 +30,21 @@ struct Range {
 
 class OffsetSizeAndStrideOpInterface;
 LogicalResult verify(OffsetSizeAndStrideOpInterface op);
+
+/// Utility method to take a list of mixed static and dynamic values that
+/// represent offsets or strides and return a vector of Values. The `values`
+/// correspond to the dynamic values for the position in `integers` (which is a
+/// ArrayAttr of IntegerAttrs) which contain ShapedType::kDynamicStrideOrOffset.
+SmallVector<Value, 4> getOperandsOrIntegersOffsetsOrStridesListAsValues(
+    OpBuilder &b, Location loc, OperandRange values, ArrayAttr integers);
+
+/// Utility method to take a list of mixed static and dynamic values that
+/// represent sizes and return a vector of Values. The `values` correspond to
+/// the dynamic values for the position in `integers` (which is a ArrayAttr of
+/// IntegerAttrs) which contain ShapedType::kDynamicSize.
+SmallVector<Value, 4>
+getOperandsOrIntegersSizesListAsValues(OpBuilder &b, Location loc,
+                                       OperandRange values, ArrayAttr integers);
 } // namespace mlir
 
 /// Include the generated interface declarations.
