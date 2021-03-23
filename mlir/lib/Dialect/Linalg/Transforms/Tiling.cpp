@@ -233,13 +233,14 @@ makeTiledShapes(OpBuilder &b, Location loc, LinalgOp linalgOp,
   auto shapeSizes = applyMapToValues(b, loc, map, allShapeSizes);
   // Construct (potentially temporary) mins and maxes on which to apply maps
   // that define tile subshapes.
-  SmallVector<Value, 8> lbs, subShapeSizes;
+  SmallVector<Value, 8> lbs, subShapeSizes, ubs;
   for (unsigned idx = 0, idxIvs = 0, e = tileSizes.size(); idx < e; ++idx) {
     bool isTiled = !isZero(tileSizes[idx]);
     lbs.push_back(isTiled ? ivs[idxIvs++] : (Value)std_constant_index(0));
     // Before composing, we need to make range a closed interval.
     Value size = isTiled ? tileSizes[idx] : shapeSizes[idx];
     subShapeSizes.push_back(size - std_constant_index(1));
+    ubs.push_back(shapeSizes[idx]);
   }
 
   SmallVector<Value, 4> res;
@@ -276,27 +277,31 @@ makeTiledShapes(OpBuilder &b, Location loc, LinalgOp linalgOp,
       auto closedIntSize = applyMapToValues(b, loc, m, subShapeSizes).front();
       // Resulting size needs to be made half open interval again.
       auto size = closedIntSize + std_constant_index(1);
+      auto ub = applyMapToValues(b, loc, m, ubs).front();
 
       // The size of the subview / subtensor should be trimmed to avoid
-      // out-of-bounds accesses, unless we statically know the subshape size
-      // divides the shape size evenly.
-      int64_t shapeSize = shapedType.getDimSize(r);
-      auto sizeCst = size.getDefiningOp<ConstantIndexOp>();
-      if (ShapedType::isDynamic(shapeSize) || !sizeCst ||
-          (shapeSize % sizeCst.getValue()) != 0) {
-        // Compute min(size, dim - offset) to avoid out-of-bounds accesses.
-        auto minMap = AffineMap::get(
-            /*dimCount=*/3, /*symbolCount=*/0,
-            {getAffineDimExpr(/*position=*/0, b.getContext()),
-             getAffineDimExpr(/*position=*/1, b.getContext()) -
-                 getAffineDimExpr(/*position=*/2, b.getContext())},
-            b.getContext());
-        Value d = memref_dim(shapedOp, r);
-        SmallVector<Value, 4> operands{size, d, offset};
-        fullyComposeAffineMapAndOperands(&minMap, &operands);
-        size = affine_min(b.getIndexType(), minMap, operands);
-      }
+      // out-of-bounds accesses, unless we know the subshape size divides the
+      // shape size evenly. If it does, the size is always the subShape size. If
+      // not the size is min(size, ub - offset) to avoid out-of-bounds accesses.
+      SmallVector<Value, 2> modOperands{ub, size};
+      auto modMap = AffineMap::get(/*dimCount=*/2, /*symbolCount=*/0,
+                                   {getAffineDimExpr(0, b.getContext()) %
+                                    getAffineDimExpr(1, b.getContext())},
+                                   b.getContext());
+      Value mod = affine_apply(modMap, modOperands);
+      Value cond = b.create<CmpIOp>(loc, CmpIPredicate::eq, mod,
+                                    b.create<ConstantIndexOp>(loc, 0));
 
+      auto minMap = AffineMap::get(
+          /*dimCount=*/3, /*symbolCount=*/0,
+          {getAffineDimExpr(/*position=*/0, b.getContext()),
+           getAffineDimExpr(/*position=*/1, b.getContext()) -
+               getAffineDimExpr(/*position=*/2, b.getContext())},
+          b.getContext());
+      SmallVector<Value, 4> operands{size, ub, offset};
+      fullyComposeAffineMapAndOperands(&minMap, &operands);
+      Value partialSize = affine_min(b.getIndexType(), minMap, operands);
+      size = b.create<SelectOp>(loc, cond, size, partialSize);
       sizes.push_back(size);
       strides.push_back(b.getIndexAttr(1));
     }

@@ -12,10 +12,13 @@ module {
   }
 }
 
-//  CHECK-DAG: #[[MAP0:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
-//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
-//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
-//  CHECK-DAG: #[[MAP3:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
+//  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 mod 32)>
+//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
+//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
+//  CHECK-DAG: #[[MAP3:.+]] = affine_map<()[s0] -> (s0 mod 64)>
+//  CHECK-DAG: #[[MAP4:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
+//  CHECK-DAG: #[[MAP5:.+]] = affine_map<()[s0] -> (s0 mod 16)>
+//  CHECK-DAG: #[[MAP6:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
 //      CHECK: func @basic_fusion
 // CHECK-SAME:   %[[ARG0:[a-zA-Z0-9_]+]]: memref<?x?xf32>
 // CHECK-SAME:   %[[ARG1:[a-zA-Z0-9_]+]]: memref<?x?xf32>
@@ -33,36 +36,38 @@ module {
 //      CHECK:   scf.parallel (%[[IV0:.+]], %[[IV1:.+]]) =
 // CHECK-SAME:     to (%[[M]], %[[N]])
 // CHECK-SAME:     step (%[[C32]], %[[C64]]) {
-//      CHECK:     %[[TILE_M:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[M]]]
+//      CHECK:     %[[FULL_TILE_M:.+]] = affine.apply #[[MAP0]]()[%[[M]]]
+//      CHECK:     %[[SELECT_TILE_M:.+]] = cmpi eq, %[[FULL_TILE_M]], %[[C0]]
+//      CHECK:     %[[PARTIAL_TILE_M:.+]] = affine.min #[[MAP1]](%[[IV0]])[%[[M]]]
+//      CHECK:     %[[TILE_M:.+]] = select %[[SELECT_TILE_M]], %[[C32]], %[[PARTIAL_TILE_M]]
 //      CHECK:     %[[K:.+]] = memref.dim %[[ARG0]], %[[C1]]
 //      CHECK:     %[[SV1:.+]] = memref.subview %[[ARG0]][%[[IV0]], 0]
 // CHECK-SAME:       [%[[TILE_M]], %[[K]]]
 //      CHECK:     %[[K_2:.+]] = memref.dim %[[ARG1]], %[[C0]]
-//      CHECK:     %[[TILE_N:.+]] = affine.min #[[MAP2]](%[[IV1]])[%[[N]]]
+//      CHECK:     %[[FULL_TILE_N:.+]] = affine.apply #[[MAP3]]()[%[[N]]]
+//      CHECK:     %[[SELECT_TILE_N:.+]] = cmpi eq, %[[FULL_TILE_N]], %[[C0]]
+//      CHECK:     %[[PARTIAL_TILE_N:.+]] = affine.min #[[MAP4]](%[[IV1]])[%[[N]]]
+//      CHECK:     %[[TILE_N:.+]] = select %[[SELECT_TILE_N]], %[[C64]], %[[PARTIAL_TILE_N]]
 //      CHECK:     %[[SV2:.+]] = memref.subview %[[ARG1]][0, %[[IV1]]]
 // CHECK-SAME:       %[[K_2]], %[[TILE_N]]
-//      CHECK:     %[[M_2:.+]] = memref.dim %[[ARG2]], %[[C0]]
-//      CHECK:     %[[TILE_M_2:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[M_2]]]
-//      CHECK:     %[[N_2:.+]] = memref.dim %[[ARG2]], %[[C1]]
-//      CHECK:     %[[TILE_N_2:.+]] = affine.min #[[MAP2]](%[[IV1]])[%[[N_2]]]
 //      CHECK:     %[[SV3:.+]] = memref.subview %[[ARG2]][%[[IV0]], %[[IV1]]]
-// CHECK-SAME:       [%[[TILE_M_2]], %[[TILE_N_2]]]
-//      CHECK:     %[[SV3_2:.+]] = memref.subview %[[ARG2]][%[[IV0]], %[[IV1]]]
 // CHECK-SAME:       [%[[TILE_M]], %[[TILE_N]]]
-//      CHECK:     linalg.fill(%[[SV3_2]], %[[CST]])
+//      CHECK:     linalg.fill(%[[SV3]], %[[CST]])
 // CHECK-SAME:       __internal_linalg_transform__ = "after_basic_fusion_producer"
 //      CHECK:     scf.for %[[IV2:.+]] = %[[C0]] to %[[K]] step %[[C16]] {
-//      CHECK:       %[[TILE_K:.+]] = affine.min #[[MAP3]](%[[IV2]])[%[[K]]]
+//      CHECK:       %[[FULL_TILE_K:.+]] = affine.apply #[[MAP5]]()[%[[K]]]
+//      CHECK:       %[[SELECT_TILE_K:.+]] = cmpi eq, %[[FULL_TILE_K]], %[[C0]]
+//      CHECK:       %[[PARTIAL_TILE_K:.+]] = affine.min #[[MAP6]](%[[IV2]])[%[[K]]]
+//      CHECK:       %[[TILE_K:.+]] = select %[[SELECT_TILE_K]], %[[C16]], %[[PARTIAL_TILE_K]]
 //      CHECK:       %[[SV4:.+]] = memref.subview %[[SV1]][0, %[[IV2]]]
 // CHECK-SAME:         [%[[TILE_M]], %[[TILE_K]]]
-//      CHECK:       %[[TILE_K_2:.+]] = affine.min #[[MAP3]](%[[IV2]])[%[[K_2]]]
 //      CHECK:       %[[SV5:.+]] = memref.subview %[[SV2]][%[[IV2]], 0]
-// CHECK-SAME:         [%[[TILE_K_2]], %[[TILE_N]]]
+// CHECK-SAME:         [%[[TILE_K]], %[[TILE_N]]]
 //      CHECK:       linalg.matmul
 // CHECK-SAME:         __internal_linalg_transform__ = "after_basic_fusion"
 // CHECK-SAME:         ins(%[[SV4]], %[[SV5]]
-// CHECK-SAME:           : memref<?x?xf32, #[[MAP1]]>, memref<?x?xf32, #[[MAP1]]>)
-// CHECK-SAME:         outs(%[[SV3]] : memref<?x?xf32, #[[MAP1]]>)
+// CHECK-SAME:           : memref<?x?xf32, #[[MAP2]]>, memref<?x?xf32, #[[MAP2]]>)
+// CHECK-SAME:         outs(%[[SV3]] : memref<?x?xf32, #[[MAP2]]>)
 //      CHECK:     }
 //      CHECK:   }
 //      CHECK:   linalg.matmul
@@ -82,10 +87,13 @@ module {
     return
   }
 }
-//  CHECK-DAG: #[[MAP0:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
-//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
-//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
-//  CHECK-DAG: #[[MAP3:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
+//  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 mod 32)>
+//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
+//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
+//  CHECK-DAG: #[[MAP3:.+]] = affine_map<()[s0] -> (s0 mod 64)>
+//  CHECK-DAG: #[[MAP4:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
+//  CHECK-DAG: #[[MAP5:.+]] = affine_map<()[s0] -> (s0 mod 16)>
+//  CHECK-DAG: #[[MAP6:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
 //      CHECK: func @rhs_fusion
 // CHECK-SAME:   %[[ARG0:[a-zA-Z0-9_]+]]: memref<?x?xf32>
 // CHECK-SAME:   %[[ARG1:[a-zA-Z0-9_]+]]: memref<?x?xf32>
@@ -103,20 +111,21 @@ module {
 //      CHECK:   scf.parallel (%[[IV0:.+]]) =
 // CHECK-SAME:     (%[[C0]]) to (%[[N]]) step (%[[C64]]) {
 //      CHECK:     %[[K:.+]] = memref.dim %[[ARG2]], %[[C0]]
-//      CHECK:     %[[TILE_N:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[N]]]
+//      CHECK:     %[[FULL_TILE_N:.+]] = affine.apply #[[MAP3]]()[%[[N]]]
+//      CHECK:     %[[SELECT_TILE_N:.+]] = cmpi eq, %[[FULL_TILE_N]], %[[C0]]
+//      CHECK:     %[[PARTIAL_TILE_N:.+]] = affine.min #[[MAP4]](%[[IV0]])[%[[N]]]
+//      CHECK:     %[[TILE_N:.+]] = select %[[SELECT_TILE_N]], %[[C64]], %[[PARTIAL_TILE_N]]
 //      CHECK:     %[[SV1:.+]] = memref.subview %[[ARG2]][0, %[[IV0]]]
 // CHECK-SAME:       [%[[K]], %[[TILE_N]]]
 //      CHECK:     %[[M:.+]] = memref.dim %[[ARG3]], %[[C0]]
-//      CHECK:     %[[N_2:.+]] = memref.dim %[[ARG3]], %[[C1]]
-//      CHECK:     %[[TILE_N_2:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[N_2]]]
 //      CHECK:     %[[SV2:.+]] = memref.subview %[[ARG3]][0, %[[IV0]]]
-// CHECK-SAME:       [%[[M]], %[[TILE_N_2]]]
+// CHECK-SAME:       [%[[M]], %[[TILE_N]]]
 //      CHECK:     %[[K_2:.+]] = memref.dim %[[ARG1]], %[[C0]]
 //      CHECK:     %[[SV3:.+]] = memref.subview %[[ARG1]][0, %[[IV0]]]
 // CHECK-SAME:       [%[[K_2]], %[[TILE_N]]]
-//      CHECK:     %[[SV3_2:.+]] = memref.subview %[[ARG2]][0, %[[IV0]]]
+//      CHECK:     %[[SV4:.+]] = memref.subview %[[ARG2]][0, %[[IV0]]]
 // CHECK-SAME:       [%[[K_2]], %[[TILE_N]]]
-//      CHECK:     linalg.copy(%[[SV3]], %[[SV3_2]])
+//      CHECK:     linalg.copy(%[[SV3]], %[[SV4]])
 // CHECK-SAME:       __internal_linalg_transform__ = "after_rhs_fusion_producer"
 //  CHECK-NOT:     linalg.fill
 //  CHECK-DAG:     %[[M_2:.+]] = memref.dim %[[ARG0]], %[[C0]]
@@ -124,21 +133,25 @@ module {
 //      CHECK:     scf.parallel (%[[IV1:.+]]) =
 // CHECK-SAME:       (%[[C0]]) to (%[[M_2]]) step (%[[C32]]) {
 // CHECK-NEXT:       scf.for %[[IV2:.+]] = %[[C0]] to %[[K_2]] step %[[C16]] {
-//      CHECK:         %[[TILE_M:.+]] = affine.min #[[MAP2]](%[[IV1]])[%[[M_2]]]
-//      CHECK:         %[[TILE_K:.+]] = affine.min #[[MAP3]](%[[IV2]])[%[[K_2]]]
+//      CHECK:         %[[FULL_TILE_M:.+]] = affine.apply #[[MAP0]]()[%[[M_2]]]
+//      CHECK:         %[[SELECT_TILE_M:.+]] = cmpi eq, %[[FULL_TILE_M]], %[[C0]]
+//      CHECK:         %[[PARTIAL_TILE_M:.+]] = affine.min #[[MAP1]](%[[IV1]])[%[[M_2]]]
+//      CHECK:         %[[TILE_M:.+]] = select %[[SELECT_TILE_M]], %[[C32]], %[[PARTIAL_TILE_M]]
+//      CHECK:         %[[FULL_TILE_K:.+]] = affine.apply #[[MAP5]]()[%[[K_2]]]
+//      CHECK:         %[[SELECT_TILE_K:.+]] = cmpi eq, %[[FULL_TILE_K]], %[[C0]]
+//      CHECK:         %[[PARTIAL_TILE_K:.+]] = affine.min #[[MAP6]](%[[IV2]])[%[[K_2]]]
+//      CHECK:         %[[TILE_K:.+]] = select %[[SELECT_TILE_K]], %[[C16]], %[[PARTIAL_TILE_K]]
 //      CHECK:         %[[SV4:.+]] = memref.subview %[[ARG0]][%[[IV1]], %[[IV2]]]
 // CHECK-SAME:           [%[[TILE_M]], %[[TILE_K]]]
-//      CHECK:         %[[TILE_K_2:.+]] = affine.min #[[MAP3]](%[[IV2]])[%[[K]]]
 //      CHECK:         %[[SV5:.+]] = memref.subview %[[SV1]][%[[IV2]], 0]
-// CHECK-SAME:           [%[[TILE_K_2]], %[[TILE_N]]]
-//      CHECK:         %[[TILE_M_2:.+]] = affine.min #[[MAP2]](%[[IV1]])[%[[M]]]
+// CHECK-SAME:           [%[[TILE_K]], %[[TILE_N]]]
 //      CHECK:         %[[SV6:.+]] = memref.subview %[[SV2]][%[[IV1]], 0]
-// CHECK-SAME:           [%[[TILE_M_2]], %[[TILE_N_2]]]
+// CHECK-SAME:           [%[[TILE_M]], %[[TILE_N]]]
 //      CHECK:         linalg.matmul
 // CHECK-SAME:           __internal_linalg_transform__ = "after_rhs_fusion"
 // CHECK-SAME:           ins(%[[SV4]], %[[SV5]]
-// CHECK-SAME:             : memref<?x?xf32, #[[MAP1]]>, memref<?x?xf32, #[[MAP1]]>)
-// CHECK-SAME:           outs(%[[SV6]] : memref<?x?xf32, #[[MAP1]]>)
+// CHECK-SAME:             : memref<?x?xf32, #[[MAP2]]>, memref<?x?xf32, #[[MAP2]]>)
+// CHECK-SAME:           outs(%[[SV6]] : memref<?x?xf32, #[[MAP2]]>)
 //      CHECK:       }
 //      CHECK:     }
 //      CHECK:   }
@@ -160,10 +173,13 @@ module {
     return
   }
 }
-//  CHECK-DAG: #[[MAP0:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
-//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
-//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
-//  CHECK-DAG: #[[MAP3:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
+//  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 mod 32)>
+//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
+//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
+//  CHECK-DAG: #[[MAP3:.+]] = affine_map<()[s0] -> (s0 mod 64)>
+//  CHECK-DAG: #[[MAP4:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
+//  CHECK-DAG: #[[MAP5:.+]] = affine_map<()[s0] -> (s0 mod 16)>
+//  CHECK-DAG: #[[MAP6:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
 //      CHECK: func @two_operand_fusion
 // CHECK-SAME:   %[[ARG0:[a-zA-Z0-9_]+]]: memref<?x?xf32>
 // CHECK-SAME:   %[[ARG1:[a-zA-Z0-9_]+]]: memref<?x?xf32>
@@ -182,46 +198,48 @@ module {
 //  CHECK-DAG:   %[[M:.+]] = memref.dim %[[ARG1]], %[[C0]]
 //      CHECK:   scf.parallel (%[[IV0:.+]]) =
 // CHECK-SAME:     (%[[C0]]) to (%[[M]]) step (%[[C32]]) {
-//      CHECK:     %[[TILE_M:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[M]]]
+//      CHECK:     %[[FULL_TILE_M:.+]] = affine.apply #[[MAP0]]()[%[[M]]]
+//      CHECK:     %[[SELECT_TILE_M:.+]] = cmpi eq, %[[FULL_TILE_M]], %[[C0]]
+//      CHECK:     %[[PARTIAL_TILE_M:.+]] = affine.min #[[MAP1]](%[[IV0]])[%[[M]]]
+//      CHECK:     %[[TILE_M:.+]] = select %[[SELECT_TILE_M]], %[[C32]], %[[PARTIAL_TILE_M]]
 //      CHECK:     %[[K:.+]] = memref.dim %[[ARG1]], %[[C1]]
 //      CHECK:     %[[SV1:.+]] = memref.subview %[[ARG1]][%[[IV0]], 0]
 // CHECK-SAME:       [%[[TILE_M]], %[[K]]]
-//      CHECK:     %[[M_2:.+]] = memref.dim %[[ARG3]], %[[C0]]
-//      CHECK:     %[[TILE_M_2:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[M_2]]]
 //      CHECK:     %[[N:.+]] = memref.dim %[[ARG3]], %[[C1]]
 //      CHECK:     %[[SV2:.+]] = memref.subview %[[ARG3]][%[[IV0]], 0]
-// CHECK-SAME:       [%[[TILE_M_2]], %[[N]]]
-//      CHECK:     %[[SV2_2:.+]] = memref.subview %[[ARG3]][%[[IV0]], 0]
 // CHECK-SAME:       [%[[TILE_M]], %[[N]]]
 //      CHECK:     %[[K_2:.+]] = memref.dim %[[ARG0]], %[[C1]]
 //      CHECK:     %[[SV3:.+]] = memref.subview %[[ARG0]][%[[IV0]], 0]
 // CHECK-SAME:       [%[[TILE_M]], %[[K_2]]]
-//      CHECK:     %[[SV3_2:.+]] = memref.subview %[[ARG1]][%[[IV0]], 0]
+//      CHECK:     %[[SV4:.+]] = memref.subview %[[ARG1]][%[[IV0]], 0]
 // CHECK-SAME:       [%[[TILE_M]], %[[K_2]]]
-//      CHECK:     linalg.copy(%[[SV3]], %[[SV3_2]])
+//      CHECK:     linalg.copy(%[[SV3]], %[[SV4]])
 // CHECK-SAME:       __internal_linalg_transform__ = "after_two_operand_fusion_producer"
-//      CHECK:     linalg.fill(%[[SV2_2]], %[[CST]])
+//      CHECK:     linalg.fill(%[[SV2]], %[[CST]])
 // CHECK-SAME:       __internal_linalg_transform__ = "after_two_operand_fusion_producer"
 //  CHECK-DAG:     %[[N_2:.+]] = memref.dim %[[ARG2]], %[[C1]]
 //      CHECK:     scf.parallel (%[[IV1:.+]]) =
 // CHECK-SAME:       (%[[C0]]) to (%[[N_2]]) step (%[[C64]]) {
 // CHECK-NEXT:       scf.for %[[IV2:.+]] = %[[C0]] to %[[K]] step %[[C16]] {
-//      CHECK:         %[[TILE_K:.+]] = affine.min #[[MAP2]](%[[IV2]])[%[[K]]]
+//      CHECK:         %[[FULL_TILE_K:.+]] = affine.apply #[[MAP5]]()[%[[K]]]
+//      CHECK:         %[[SELECT_TILE_K:.+]] = cmpi eq, %[[FULL_TILE_K]], %[[C0]]
+//      CHECK:         %[[PARTIAL_TILE_K:.+]] = affine.min #[[MAP6]](%[[IV2]])[%[[K]]]
+//      CHECK:         %[[TILE_K:.+]] = select %[[SELECT_TILE_K]], %[[C16]], %[[PARTIAL_TILE_K]]
 //      CHECK:         %[[SV4:.+]] = memref.subview %[[SV1]][0, %[[IV2]]]
 // CHECK-SAME:           [%[[TILE_M]], %[[TILE_K]]]
-//      CHECK:         %[[K_2:.+]] = memref.dim %[[ARG2]], %[[C0]]
-//      CHECK:         %[[TILE_K_2:.+]] = affine.min #[[MAP2]](%[[IV2]])[%[[K_2]]]
-//      CHECK:         %[[TILE_N:.+]] = affine.min #[[MAP3]](%[[IV1]])[%[[N_2]]]
+//      CHECK:         %[[FULL_TILE_N:.+]] = affine.apply #[[MAP3]]()[%[[N_2]]]
+//      CHECK:         %[[SELECT_TILE_N:.+]] = cmpi eq, %[[FULL_TILE_N]], %[[C0]]
+//      CHECK:         %[[PARTIAL_TILE_N:.+]] = affine.min #[[MAP4]](%[[IV1]])[%[[N_2]]]
+//      CHECK:         %[[TILE_N:.+]] = select %[[SELECT_TILE_N]], %[[C64]], %[[PARTIAL_TILE_N]]
 //      CHECK:         %[[SV5:.+]] = memref.subview %[[ARG2]][%[[IV2]], %[[IV1]]]
-// CHECK-SAME:           [%[[TILE_K_2]], %[[TILE_N]]]
-//      CHECK:         %[[TILE_N_2:.+]] = affine.min #[[MAP3]](%[[IV1]])[%[[N]]]
+// CHECK-SAME:           [%[[TILE_K]], %[[TILE_N]]]
 //      CHECK:         %[[SV6:.+]] = memref.subview %[[SV2]][0, %[[IV1]]]
-// CHECK-SAME:           [%[[TILE_M_2]], %[[TILE_N_2]]]
+// CHECK-SAME:           [%[[TILE_M]], %[[TILE_N]]]
 //      CHECK:         linalg.matmul
 // CHECK-SAME:           __internal_linalg_transform__ = "after_two_operand_fusion"
 // CHECK-SAME:           ins(%[[SV4]], %[[SV5]]
-// CHECK-SAME:             : memref<?x?xf32, #[[MAP1]]>, memref<?x?xf32, #[[MAP1]]>)
-// CHECK-SAME:           outs(%[[SV6]] : memref<?x?xf32, #[[MAP1]]>)
+// CHECK-SAME:             : memref<?x?xf32, #[[MAP2]]>, memref<?x?xf32, #[[MAP2]]>)
+// CHECK-SAME:           outs(%[[SV6]] : memref<?x?xf32, #[[MAP2]]>)
 //      CHECK:       }
 //      CHECK:     }
 //      CHECK:   }
@@ -242,10 +260,13 @@ module {
     return
   }
 }
-//  CHECK-DAG: #[[MAP0:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
-//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
-//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
-//  CHECK-DAG: #[[MAP3:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
+//  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 mod 32)>
+//  CHECK-DAG: #[[MAP1:.+]] = affine_map<(d0)[s0] -> (32, -d0 + s0)>
+//  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0, d1)[s0, s1] -> (d0 * s1 + s0 + d1)>
+//  CHECK-DAG: #[[MAP3:.+]] = affine_map<()[s0] -> (s0 mod 64)>
+//  CHECK-DAG: #[[MAP4:.+]] = affine_map<(d0)[s0] -> (64, -d0 + s0)>
+//  CHECK-DAG: #[[MAP5:.+]] = affine_map<()[s0] -> (s0 mod 16)>
+//  CHECK-DAG: #[[MAP6:.+]] = affine_map<(d0)[s0] -> (16, -d0 + s0)>
 //      CHECK: func @matmul_fusion
 // CHECK-SAME:   %[[ARG0:[a-zA-Z0-9_]+]]: memref<?x?xf32>
 // CHECK-SAME:   %[[ARG1:[a-zA-Z0-9_]+]]: memref<?x?xf32>
@@ -262,15 +283,16 @@ module {
 //  CHECK-DAG:   %[[M:.+]] = memref.dim %[[ARG2]], %[[C0]]
 //      CHECK:   scf.parallel (%[[IV0:.+]]) =
 // CHECK-SAME:     (%[[C0]]) to (%[[M]]) step (%[[C32]]) {
-//      CHECK:     %[[TILE_M:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[M]]]
+//      CHECK:     %[[FULL_TILE_M:.+]] = affine.apply #[[MAP0]]()[%[[M]]]
+//      CHECK:     %[[SELECT_TILE_M:.+]] = cmpi eq, %[[FULL_TILE_M]], %[[C0]]
+//      CHECK:     %[[PARTIAL_TILE_M:.+]] = affine.min #[[MAP1]](%[[IV0]])[%[[M]]]
+//      CHECK:     %[[TILE_M:.+]] = select %[[SELECT_TILE_M]], %[[C32]], %[[PARTIAL_TILE_M]]
 //      CHECK:     %[[K2:.+]] = memref.dim %[[ARG2]], %[[C1]]
 //      CHECK:     %[[SV1:.+]] = memref.subview %[[ARG2]][%[[IV0]], 0]
 // CHECK-SAME:       [%[[TILE_M]], %[[K2]]]
-//      CHECK:     %[[M_2:.+]] = memref.dim %[[ARG4]], %[[C0]]
-//      CHECK:     %[[TILE_M_2:.+]] = affine.min #[[MAP0]](%[[IV0]])[%[[M_2]]]
 //      CHECK:     %[[N:.+]] = memref.dim %[[ARG4]], %[[C1]]
 //      CHECK:     %[[SV2:.+]] = memref.subview %[[ARG4]][%[[IV0]], 0]
-// CHECK-SAME:       [%[[TILE_M_2]], %[[N]]]
+// CHECK-SAME:       [%[[TILE_M]], %[[N]]]
 //      CHECK:     %[[K2_2:.+]] = memref.dim %[[ARG1]], %[[C1]]
 //      CHECK:     %[[K1:.+]] = memref.dim %[[ARG0]], %[[C1]]
 //      CHECK:     %[[SV3:.+]] = memref.subview %[[ARG0]][%[[IV0]], 0]
@@ -281,28 +303,31 @@ module {
 //      CHECK:     linalg.matmul
 // CHECK-SAME:         __internal_linalg_transform__ = "after_lhs_fusion_producer"
 // CHECK-SAME:         ins(%[[SV3]], %[[SV4]]
-// CHECK-SAME:           : memref<?x?xf32, #[[MAP1]]>, memref<?x?xf32, #[[MAP1]]>)
-// CHECK-SAME:         outs(%[[SV1_2]] : memref<?x?xf32, #[[MAP1]]>)
+// CHECK-SAME:           : memref<?x?xf32, #[[MAP2]]>, memref<?x?xf32, #[[MAP2]]>)
+// CHECK-SAME:         outs(%[[SV1_2]] : memref<?x?xf32, #[[MAP2]]>)
 //  CHECK-DAG:     %[[N_2:.+]] = memref.dim %[[ARG3]], %[[C1]]
 //      CHECK:     scf.parallel (%[[IV1:.+]]) =
 // CHECK-SAME:       (%[[C0]]) to (%[[N_2]]) step (%[[C64]]) {
 // CHECK-NEXT:       scf.for %[[IV2:.+]] = %[[C0]] to %[[K]] step %[[C16]] {
-//      CHECK:         %[[TILE_K:.+]] = affine.min #[[MAP2]](%[[IV2]])[%[[K]]]
+//      CHECK:         %[[FULL_TILE_K:.+]] = affine.apply #[[MAP5]]()[%[[K2]]]
+//      CHECK:         %[[SELECT_TILE_K:.+]] = cmpi eq, %[[FULL_TILE_K]], %[[C0]]
+//      CHECK:         %[[PARTIAL_TILE_K:.+]] = affine.min #[[MAP6]](%[[IV2]])[%[[K2]]]
+//      CHECK:         %[[TILE_K:.+]] = select %[[SELECT_TILE_K]], %[[C16]], %[[PARTIAL_TILE_K]]
 //      CHECK:         %[[SV6:.+]] = memref.subview %[[SV1]][0, %[[IV2]]]
 // CHECK-SAME:           [%[[TILE_M]], %[[TILE_K]]]
-//      CHECK:         %[[K_2:.+]] = memref.dim %[[ARG3]], %[[C0]]
-//      CHECK:         %[[TILE_K_2:.+]] = affine.min #[[MAP2]](%[[IV2]])[%[[K_2]]]
-//      CHECK:         %[[TILE_N:.+]] = affine.min #[[MAP3]](%[[IV1]])[%[[N_2]]]
+//      CHECK:         %[[FULL_TILE_N:.+]] = affine.apply #[[MAP3]]()[%[[N_2]]]
+//      CHECK:         %[[SELECT_TILE_N:.+]] = cmpi eq, %[[FULL_TILE_N]], %[[C0]]
+//      CHECK:         %[[PARTIAL_TILE_N:.+]] = affine.min #[[MAP4]](%[[IV1]])[%[[N_2]]]
+//      CHECK:         %[[TILE_N:.+]] = select %[[SELECT_TILE_N]], %[[C64]], %[[PARTIAL_TILE_N]]
 //      CHECK:         %[[SV7:.+]] = memref.subview %[[ARG3]][%[[IV2]], %[[IV1]]]
-// CHECK-SAME:           [%[[TILE_K_2]], %[[TILE_N]]]
-//      CHECK:         %[[TILE_N_2:.+]] = affine.min #[[MAP3]](%[[IV1]])[%[[N]]]
+// CHECK-SAME:           [%[[TILE_K]], %[[TILE_N]]]
 //      CHECK:         %[[SV8:.+]] = memref.subview %[[SV2]][0, %[[IV1]]]
-// CHECK-SAME:           [%[[TILE_M_2]], %[[TILE_N_2]]]
+// CHECK-SAME:           [%[[TILE_M]], %[[TILE_N]]]
 //      CHECK:         linalg.matmul
 // CHECK-SAME:           __internal_linalg_transform__ = "after_lhs_fusion"
 // CHECK-SAME:           ins(%[[SV6]], %[[SV7]]
-// CHECK-SAME:             : memref<?x?xf32, #[[MAP1]]>, memref<?x?xf32, #[[MAP1]]>)
-// CHECK-SAME:           outs(%[[SV8]] : memref<?x?xf32, #[[MAP1]]>)
+// CHECK-SAME:             : memref<?x?xf32, #[[MAP2]]>, memref<?x?xf32, #[[MAP2]]>)
+// CHECK-SAME:           outs(%[[SV8]] : memref<?x?xf32, #[[MAP2]]>)
 //      CHECK:       }
 //      CHECK:     }
 //      CHECK:   }
