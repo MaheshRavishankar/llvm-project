@@ -87,6 +87,88 @@ def LinalgContractionOpInterface : OpInterface<"ContractionOpInterface"> {
   ];
 }
 
+def LinalgConvolutionOpInterface : OpInterface<"ConvolutionOpInterface"> {
+  let description = [{
+    TODO
+  }];
+  let cppNamespace = "::mlir::linalg";
+  let verify = [{ return detail::verifyConvolutionInterface($_op); }];
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return the image operand.",
+      /*retTy=*/"Value",
+      /*methodName=*/"image",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return $_op.getOperation()->getOperand(0);
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the filter operand.",
+      /*retTy=*/"Value",
+      /*methodName=*/"filter",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return $_op.getOperation()->getOperand(1);
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the loop over batch dimensions of the convolution operation.",
+      /*retTy=*/"Optional<unsigned>",
+      /*methodName=*/"getBatchLoopDim",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return mlir::getConvolutionBatchLoopDim($_op);
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the loops over output image dimensions of the convolution operation.",
+      /*retTy=*/"SmallVector<unsigned>",
+      /*methodName=*/"getOutputImageLoopDims",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return mlir::getConvolutionOutputImageLoopDims($_op);
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the loop over output channel dimensions of the convolution operation.",
+      /*retTy=*/"Optional<unsigned>",
+      /*methodName=*/"getOutputChannelLoopDim",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return mlir::getConvolutionOutputChannelLoopDim($_op);
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the loop over filter dimensions of the convolution operation.",
+      /*retTy=*/"SmallVector<unsigned>",
+      /*methodName=*/"getFilterLoopDims",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return mlir::getConvolutionFilterLoopDims($_op);
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the loop over input channel dimensions of the convolution operation.",
+      /*retTy=*/"Optional<unsigned>",
+      /*methodName=*/"getInputChannelLoopDim",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return mlir::getConvolutionInputChannelLoopDim($_op);
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/"Return the depthwise loop of the convolution operation.",
+      /*retTy=*/"Optional<unsigned>",
+      /*methodName=*/"getDepthwiseLoopDim",
+      /*args=*/(ins),
+      /*methodBody=*/[{
+        return mlir::getConvolutionDepthwiseLoopDim($_op);
+      }]
+    >,
+  ];
+}
+
 // The 'LinalgStructuredInterface' provides access to the 'LinalgOp' interface.
 def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
   let cppNamespace = "::mlir::linalg";

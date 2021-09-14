@@ -23,6 +23,40 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
 namespace mlir {
+
+/// Get the loop dimension that iterates over the batch dimension for `op` that
+/// implements the `ConvolutionOpInterface`. Returns llvm::None if the `op` does
+/// not implement the `ConvolutionOpInterface`, or if no batch dimensions exist.
+Optional<unsigned> getConvolutionBatchLoopDim(Operation *op);
+
+/// Get the loop dimensions that iterate over the output image for `op` that
+/// implements the `ConvolutionOpInterface`. Returns `{}` if the `op` does not
+/// implement the `ConvolutionOpInterface`.
+SmallVector<unsigned> getConvolutionOutputImageLoopDims(Operation *op);
+
+/// Get the loop dimension that iterates over the output channel dimensions for
+/// `op` that implements the `ConvolutionOpInterface`.  Returns llvm::None if
+/// the `op` does not implement the `ConvolutionOpInterface`, or if no output
+/// channel dimensions exist.
+Optional<unsigned> getConvolutionOutputChannelLoopDim(Operation *op);
+
+/// Get the loop dimensions that iterate over the filter loops for `op` that
+/// implements the `ConvolutionOpInterface`. Returns `{}` if the `op` does not
+/// implement the `ConvolutionOpInterface`.
+SmallVector<unsigned> getConvolutionFilterLoopDims(Operation *op);
+
+/// Get the loop dimension that iterates over the input channel dimensions for
+/// `op` that implements the `ConvolutionOpInterface`.  Returns llvm::None if
+/// the `op` does not implement the `ConvolutionOpInterface`, or if no input
+/// channel dimensions exist.
+Optional<unsigned> getConvolutionInputChannelLoopDim(Operation *op);
+
+/// Get the loop dimension that iterates over the depthwise dimension for `op`
+/// that implements the `ConvolutionOpInterface`.  Returns llvm::None if the
+/// `op` does not implement the `ConvolutionOpInterface`, or is not a depthwise
+/// convolution.
+Optional<unsigned> getConvolutionDepthwiseLoopDim(Operation *op);
+
 namespace linalg {
 class LinalgOp;
 
@@ -43,6 +77,9 @@ namespace detail {
 
 /// Verify that `op` conforms to ContractionOpInterface.
 LogicalResult verifyContractionInterface(Operation *op);
+
+/// Verify that `op` conforms to the ConvolutionOpInterface.
+LogicalResult verifyConvolutionInterface(Operation *op);
 
 /// Verify that `op` conforms to the invariants of StructuredOpInterface
 LogicalResult verifyStructuredOpInterface(Operation *op);

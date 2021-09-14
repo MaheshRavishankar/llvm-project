@@ -636,6 +636,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -695,6 +697,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -756,6 +760,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -822,6 +828,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -901,6 +909,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -988,6 +998,8 @@ metadata: !LinalgOpMetadata
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output. This includes the zero
     point offsets common to quantized operations.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1106,6 +1118,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1188,6 +1202,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1274,6 +1290,8 @@ metadata: !LinalgOpMetadata
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output. Multiplier is set to 1
     which is a special case for most dpethwise convolutions.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1355,6 +1373,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1468,6 +1488,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1550,6 +1572,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the operands to the inner multiply, promoting
     them to the same data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1664,6 +1688,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the input operand, promoting it to the same
     data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1735,6 +1761,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the input operand, promoting it to the same
     data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1806,6 +1834,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the input operand, promoting it to the same
     data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1877,6 +1907,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the input operand, promoting it to the same
     data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -1948,6 +1980,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the input operand, promoting it to the same
     data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -2022,6 +2056,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the input operand, promoting it to the same
     data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
@@ -2096,6 +2132,8 @@ metadata: !LinalgOpMetadata
 
     Numeric casting is performed on the input operand, promoting it to the same
     data type as the accumulator/output.
+  implements:
+  - LinalgConvolutionOpInterface
 structured_op: !LinalgStructuredOpConfig
   args:
   - !LinalgOperandDefConfig
