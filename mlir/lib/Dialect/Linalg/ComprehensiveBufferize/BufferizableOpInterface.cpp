@@ -358,8 +358,7 @@ Value mlir::linalg::comprehensive_bufferize::getResultBuffer(
       b.setInsertionPointAfter(operandBuffer.getDefiningOp());
     }
     // Allocate the result buffer.
-    Value resultBuffer =
-        state.allocationFns.createAllocDeallocFn(b, loc, operandBuffer, state);
+    Value resultBuffer = state.createAllocDeallocFn(b, loc, operandBuffer);
     bool skipCopy = false;
     // Do not copy if the last preceding write of `operand` is an op that does
     // not write (skipping ops that merely create aliases). E.g., InitTensorOp.

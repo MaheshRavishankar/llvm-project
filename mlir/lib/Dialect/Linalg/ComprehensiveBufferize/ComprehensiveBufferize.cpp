@@ -835,8 +835,8 @@ static MemRefType getAllocationTypeAndShape(OpBuilder &b, Location loc,
 /// Create an Allocop/DeAllocOp pair, where the AllocOp is after
 /// `shapedValue.getDefiningOp` (or at the top of the block in case of a
 /// bbArg) and the DeallocOp is at the end of the block.
-static Value createNewAllocDeallocPairForShapedValue(
-    OpBuilder &b, Location loc, Value shapedValue, BufferizationState &state) {
+Value BufferizationState::createAllocDeallocFn(OpBuilder &b, Location loc,
+                                               Value shapedValue) {
   // Take a guard before anything else.
   OpBuilder::InsertionGuard g(b);
 
@@ -848,19 +848,19 @@ static Value createNewAllocDeallocPairForShapedValue(
   MemRefType allocMemRefType =
       getAllocationTypeAndShape(b, loc, shapedValue, dynShape);
   Optional<Value> allocated =
-      state.allocationFns.allocationFn(b, loc, allocMemRefType, dynShape);
+      allocationFns.allocationFn(b, loc, allocMemRefType, dynShape);
   // TODO: For now just assert the value is returned. Eventually need to
   // error-propagate.
   assert(allocated && "allocation failed");
   Value casted = allocated.getValue();
   if (memRefType && memRefType != allocMemRefType) {
     casted = b.create<memref::CastOp>(loc, memRefType, allocated.getValue());
-    state.aliasInfo.insertNewBufferEquivalence(casted, allocated.getValue());
+    aliasInfo.insertNewBufferEquivalence(casted, allocated.getValue());
   }
 
   // 2. Create memory deallocation.
   b.setInsertionPoint(allocated.getValue().getParentBlock()->getTerminator());
-  state.allocationFns.deallocationFn(b, loc, allocated.getValue());
+  allocationFns.deallocationFn(b, loc, allocated.getValue());
   return casted;
 }
 
@@ -1162,8 +1162,7 @@ inPlaceAnalysisFuncOpBody(FuncOp funcOp, BufferizationAliasInfo &aliasInfo,
 //===----------------------------------------------------------------------===//
 
 Optional<Value> mlir::linalg::comprehensive_bufferize::defaultAllocationFn(
-    OpBuilder &b, Location loc, MemRefType type,
-    const SmallVector<Value> &dynShape) {
+    OpBuilder &b, Location loc, MemRefType type, ArrayRef<Value> dynShape) {
   Value allocated = b.create<memref::AllocOp>(
       loc, type, dynShape, b.getI64IntegerAttr(kBufferAlignments));
   return allocated;
@@ -1727,8 +1726,7 @@ LogicalResult mlir::linalg::comprehensive_bufferize::runComprehensiveBufferize(
 std::unique_ptr<AllocationCallbacks>
 mlir::linalg::comprehensive_bufferize::defaultAllocationCallbacks() {
   return std::make_unique<AllocationCallbacks>(
-      defaultAllocationFn, defaultDeallocationFn, defaultMemCpyFn,
-      createNewAllocDeallocPairForShapedValue);
+      defaultAllocationFn, defaultDeallocationFn, defaultMemCpyFn);
 }
 
 // Default constructor for BufferizationOptions that sets all allocation
@@ -2260,8 +2258,7 @@ struct ExtractSliceOpInterface
     bool inplace = state.aliasInfo.isInPlace(extractSliceOp->getResult(0));
     Value alloc;
     if (!inplace)
-      alloc = createNewAllocDeallocPairForShapedValue(
-          b, loc, extractSliceOp.result(), state);
+      alloc = state.createAllocDeallocFn(b, loc, extractSliceOp.result());
 
     // Bufferize to subview.
     auto subviewMemRefType =

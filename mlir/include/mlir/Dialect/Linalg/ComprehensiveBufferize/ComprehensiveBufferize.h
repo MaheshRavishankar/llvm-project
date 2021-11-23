@@ -39,7 +39,7 @@ LogicalResult inPlaceAnalysis(SmallVector<Operation *> &ops,
 /// Default allocation function that is used by the comprehensive bufferization
 /// pass. The default currently creates a ranked memref using `memref.alloc`.
 Optional<Value> defaultAllocationFn(OpBuilder &b, Location loc, MemRefType type,
-                                    const SmallVector<Value> &dynShape);
+                                    ArrayRef<Value> dynShape);
 
 /// Default deallocation function that is used by the comprehensive
 /// bufferization pass. It expects to recieve back the value called from the
