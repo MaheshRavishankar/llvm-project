@@ -632,6 +632,8 @@ OpFoldResult DimOp::fold(ArrayRef<Attribute> operands) {
       }
       resultIndex++;
     }
+    if (sourceIndex >= subview.static_sizes().size())
+      return {};
     assert(subview.isDynamicSize(sourceIndex) &&
            "expected dynamic subview size");
     return subview.getDynamicSize(sourceIndex);
@@ -1913,6 +1915,27 @@ public:
     return success();
   }
 };
+
+class NoopSubViewOpFolder final : public OpRewritePattern<SubViewOp> {
+public:
+  using OpRewritePattern<SubViewOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SubViewOp subViewOp,
+                                PatternRewriter &rewriter) const override {
+    if (!subViewOp.static_offsets().empty() ||
+        !subViewOp.static_sizes().empty() ||
+        !subViewOp.static_strides().empty())
+      return failure();
+    Value source = subViewOp.source();
+    if (subViewOp.getSourceType() == subViewOp.getType()) {
+      subViewOp.replaceAllUsesWith(source);
+      return success();
+    }
+    rewriter.replaceOpWithNewOp<CastOp>(subViewOp, subViewOp.getType(), source);
+    return success();
+  }
+};
+
 } // namespace
 
 /// Return the canonical type of the result of a subview.
@@ -1936,7 +1959,8 @@ struct SubViewCanonicalizer {
 void SubViewOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                             MLIRContext *context) {
   results
-      .add<OpWithOffsetSizesAndStridesConstantArgumentFolder<
+      .add<NoopSubViewOpFolder,
+           OpWithOffsetSizesAndStridesConstantArgumentFolder<
                SubViewOp, SubViewReturnTypeCanonicalizer, SubViewCanonicalizer>,
            SubViewOpMemRefCastFolder>(context);
 }
@@ -1949,6 +1973,9 @@ OpFoldResult SubViewOp::fold(ArrayRef<Attribute> operands) {
       resultShapedType == sourceShapedType) {
     return getViewSource();
   }
+  if (static_offsets().empty() && static_sizes().empty() &&
+      static_strides().empty())
+    return getViewSource();
 
   return {};
 }

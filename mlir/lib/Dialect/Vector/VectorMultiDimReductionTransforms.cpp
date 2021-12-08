@@ -41,6 +41,8 @@ public:
     auto src = multiReductionOp.source();
     auto loc = multiReductionOp.getLoc();
     auto srcRank = multiReductionOp.getSourceVectorType().getRank();
+    if (srcRank <= 1)
+      return failure();
 
     // Separate reduction and parallel dims
     auto reductionDimsRange =
