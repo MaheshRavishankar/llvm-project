@@ -387,6 +387,9 @@ static bool hasReadAfterWriteInterference(
       if (insideMutuallyExclusiveRegions(readingOp, conflictingWritingOp))
         continue;
 
+      if (readingOp->isProperAncestor(conflictingWritingOp))
+        continue;
+
       LDBG("WRITE = #" << printValueInfo(lastWrite) << "\n");
 
       // No conflict if the conflicting write happens before the last
@@ -396,7 +399,10 @@ static bool hasReadAfterWriteInterference(
           // conflictingWritingOp happens before writingOp. No conflict.
           continue;
         // No conflict if conflictingWritingOp is contained in writingOp.
-        if (writingOp->isProperAncestor(conflictingWritingOp))
+        if (writingOp->isProperAncestor(conflictingWritingOp) ||
+            conflictingWritingOp->isProperAncestor(writingOp))
+          continue;
+        if (insideMutuallyExclusiveRegions(writingOp, conflictingWritingOp))
           continue;
       } else {
         auto bbArg = lastWrite.cast<BlockArgument>();
