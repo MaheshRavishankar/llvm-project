@@ -86,6 +86,10 @@ void populateFoldReshapeOpsByLinearizationPatterns(RewritePatternSet &patterns);
 void populateFoldUnitDimsReshapeOpsByLinearizationPatterns(
     RewritePatternSet &patterns);
 
+/// Pattern to fuse a `linalg.pad_tensor` operation with its producer
+/// `linalg.generic` operation.
+void populateFusePadTensorWithGenericOpPatterns(RewritePatternSet &patterns);
+
 /// Patterns to convert from one named op to another. These can be seen as
 /// canonicalizations of named ops into another named op.
 void populateLinalgNamedOpConversionPatterns(RewritePatternSet &patterns);
