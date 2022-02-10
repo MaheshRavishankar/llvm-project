@@ -892,11 +892,153 @@ struct EraseIdentityGenericOp : public OpRewritePattern<GenericOp> {
     return success();
   }
 };
+
+/// For each of the operand in `operands` this function maps the static sizes of
+/// dimensions to their affine dim expressions.
+static void populateMap(GenericOp genericOp, ArrayRef<OpOperand *> operands,
+                        llvm::DenseMap<AffineExpr, int64_t> &affineExprToSize) {
+  for (OpOperand *opOperand : operands) {
+    if (genericOp.isScalar(opOperand))
+      continue;
+    Value src = opOperand->get();
+    auto sourceType = src.getType().cast<RankedTensorType>();
+    auto sourceMap = genericOp.getTiedIndexingMap(opOperand);
+
+    // Get the `sourceShape` of the `sourceType`. If the operand is a result of
+    // `tensor.cast` operation and source of the cast operation has a static
+    // shape, then assign it to the `sourceShape`.
+    auto parentOp = src.getDefiningOp();
+    ArrayRef<int64_t> sourceShape = sourceType.getShape();
+    if (parentOp) {
+      if (auto castOp = dyn_cast<tensor::CastOp>(parentOp)) {
+        Value castSource = castOp.source();
+        auto castSourceType = castSource.getType().cast<RankedTensorType>();
+        if (castSourceType.hasStaticShape())
+          sourceShape = castSourceType.getShape();
+      }
+    }
+
+    // If the source shape's dimension has a static shape, map the affine dim
+    // expression to the known static size.
+    for (unsigned i = 0; i < sourceShape.size(); i++) {
+      if (sourceType.isDynamicDim(i))
+        continue;
+      if (auto affineDimExpr = sourceMap.getResult(i).dyn_cast<AffineDimExpr>())
+        affineExprToSize.try_emplace(affineDimExpr, sourceShape[i]);
+    }
+  }
+}
+
+/// Static shapes for the operands can be inferred if any one of the operands
+/// have a static shape. This can be done by referring to the affine dim
+/// expressions for the operand.
+struct InferStaticShapeOfOperands : public OpRewritePattern<GenericOp> {
+  using OpRewritePattern<GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(GenericOp genericOp,
+                                PatternRewriter &rewriter) const override {
+    if (!genericOp.hasTensorSemantics())
+      return failure();
+
+    // Maps must be projected permutations.
+    if (llvm::any_of(genericOp.getIndexingMaps(), [](AffineMap map) {
+          return !map.isProjectedPermutation();
+        }))
+      return failure();
+
+    // Maps affine dim expressions to the static size of that dimension.
+    llvm::DenseMap<AffineExpr, int64_t> affineExprToSize;
+    Location loc = genericOp.getLoc();
+
+    // For each of the affine dim expression, check if the size is known. If
+    // known add that in the map.
+    populateMap(genericOp, genericOp.getInputAndOutputOperands(),
+                affineExprToSize);
+
+    SmallVector<Value> newOperands;
+    SmallVector<Type> resultTypes;
+    bool changeNeeded = false;
+    newOperands.reserve(genericOp.getNumInputsAndOutputs());
+    resultTypes.reserve(genericOp.getNumOutputs());
+
+    // Iterate over all the operands and update the static sizes.
+    for (OpOperand *opOperand : genericOp.getInputAndOutputOperands()) {
+      Value src = opOperand->get();
+      if (genericOp.isScalar(opOperand)) {
+        newOperands.push_back(src);
+        continue;
+      }
+      auto sourceType = src.getType().cast<RankedTensorType>();
+      Type resultType = sourceType;
+      if (sourceType.hasStaticShape()) {
+        newOperands.push_back(src);
+      } else {
+        ArrayRef<int64_t> sourceShape = sourceType.getShape();
+        AffineMap sourceMap = genericOp.getTiedIndexingMap(opOperand);
+        SmallVector<int64_t> newShape;
+        // If operand is updated with new shape, `newOperandNeeded` will be
+        // true.
+        bool newOperandNeeded = false;
+        for (unsigned i = 0; i < sourceShape.size(); i++) {
+          int64_t dimShape = sourceShape[i];
+          AffineExpr dimExpr = sourceMap.getResult(i);
+          if (dimShape == -1 &&
+              affineExprToSize.find(dimExpr) != affineExprToSize.end()) {
+            // Dimension has a dynamic shape and corresponding affine dim
+            // expression is present in the map. So assign the size for the
+            // given affine dim expression to the dimension.
+            newShape.push_back(affineExprToSize[dimExpr]);
+            newOperandNeeded = true;
+          } else {
+            newShape.push_back(dimShape);
+          }
+        }
+        resultType =
+            RankedTensorType::get(newShape, sourceType.getElementType());
+        if (newOperandNeeded) {
+          changeNeeded = true;
+          // Get the new operand value given its size and element type by
+          // casting it.
+          Value newOperand =
+              rewriter.create<tensor::CastOp>(loc, resultType, src);
+          newOperands.push_back(newOperand);
+        } else {
+          newOperands.push_back(src);
+        }
+      }
+      if (genericOp.isOutputTensor(opOperand))
+        resultTypes.push_back(resultType);
+    }
+
+    if (!changeNeeded)
+      return failure();
+
+    // Clone op.
+    Operation *newOp =
+        cast<linalg::LinalgOp>(genericOp.getOperation())
+            .clone(rewriter, genericOp->getLoc(), resultTypes, newOperands);
+    SmallVector<Value> replacements;
+    replacements.reserve(newOp->getNumResults());
+    for (auto it : llvm::zip(genericOp->getResults(), newOp->getResults())) {
+      Value newResult = std::get<1>(it);
+      Value oldResult = std::get<0>(it);
+      Type newType = newResult.getType();
+      Type oldType = oldResult.getType();
+      replacements.push_back(
+          (newType != oldType)
+              ? rewriter.create<tensor::CastOp>(loc, newType, newResult)
+              : newResult);
+    }
+    rewriter.replaceOp(genericOp, replacements);
+    return success();
+  }
+};
 } // namespace
 
 void GenericOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                             MLIRContext *context) {
-  results.add<DeduplicateGenericOpInputs, EraseIdentityGenericOp>(context);
+  results.add<DeduplicateGenericOpInputs, EraseIdentityGenericOp,
+              InferStaticShapeOfOperands>(context);
 }
 
 //===----------------------------------------------------------------------===//

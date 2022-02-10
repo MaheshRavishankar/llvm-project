@@ -599,3 +599,128 @@ func @fold_self_copy(%0 : memref<4x16xf32>) {
     }
   return 
 }
+
+// The below test cases check the inference of static shapes in linalg.generic operation.
+// -----
+
+#map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+// CHECK-LABEL: func @static_input_without_cast
+// CHECK-SAME:  (%[[ARG0:.*]]: tensor<2x3x4xf32>, %[[ARG1:.*]]: tensor<?x?x?xf32>) -> tensor<2x3x4xf32> {
+func @static_input_without_cast(%arg0 : tensor<2x3x4xf32>, %arg1: tensor<?x?x?xf32>) -> tensor<2x3x4xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %0 = tensor.dim %arg0, %c0 : tensor<2x3x4xf32>
+  %1 = tensor.dim %arg0, %c1 : tensor<2x3x4xf32>
+  %2 = tensor.dim %arg0, %c2 : tensor<2x3x4xf32>
+  %3 = linalg.init_tensor [%0, %1, %2] : tensor<?x?x?xf32>
+  %4 = linalg.generic {
+    indexing_maps = [#map, #map, #map],
+    iterator_types = ["parallel", "parallel", "parallel"]
+  } ins(%arg0, %arg1 : tensor<2x3x4xf32>, tensor<?x?x?xf32>)
+    outs(%3 : tensor<?x?x?xf32>) {
+  ^bb0(%arg2 : f32, %arg3 : f32, %arg4 : f32):
+    %9 = arith.addf %arg2, %arg3 : f32
+    linalg.yield %9 : f32
+  } -> (tensor<?x?x?xf32>)
+  %5 = tensor.cast %4 : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+  return %5 : tensor<2x3x4xf32>
+    //  CHECK:      %[[CAST_ARG1:.*]] = tensor.cast %[[ARG1]] : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+    //  CHECK-NEXT: %[[GENERIC_OP:.*]] = linalg.generic
+    //  CHECK-SAME: ins(%[[ARG0]], %[[CAST_ARG1]] : tensor<2x3x4xf32>, tensor<2x3x4xf32>)
+    //  CHECK-SAME: outs({{.*}} : tensor<2x3x4xf32>)
+}
+
+// -----
+
+#map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+// CHECK-LABEL: func @static_input_with_cast
+// CHECK-SAME:  (%[[ARG0:.*]]: tensor<2x3x4xf32>, %[[ARG1:.*]]: tensor<?x?x?xf32>) -> tensor<2x3x4xf32> {
+func @static_input_with_cast(%arg0 : tensor<2x3x4xf32>, %arg1: tensor<?x?x?xf32>) -> tensor<2x3x4xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %0 = tensor.dim %arg0, %c0 : tensor<2x3x4xf32>
+  %1 = tensor.dim %arg0, %c1 : tensor<2x3x4xf32>
+  %2 = tensor.dim %arg0, %c2 : tensor<2x3x4xf32>
+  %3 = linalg.init_tensor [%0, %1, %2] : tensor<?x?x?xf32>
+  %4 = tensor.cast %arg1 : tensor<?x?x?xf32> to tensor<2x?x?xf32>
+  %5 = linalg.generic {
+    indexing_maps = [#map, #map, #map],
+    iterator_types = ["parallel", "parallel", "parallel"]
+  } ins(%arg0, %4 : tensor<2x3x4xf32>, tensor<2x?x?xf32>)
+    outs(%3 : tensor<?x?x?xf32>) {
+  ^bb0(%arg2 : f32, %arg3 : f32, %arg4 : f32):
+    %9 = arith.addf %arg2, %arg3 : f32
+    linalg.yield %9 : f32
+  } -> (tensor<?x?x?xf32>)
+  %6 = tensor.cast %5 : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+  return %6: tensor<2x3x4xf32>
+    //  CHECK:      %[[CAST_ARG1:.*]] = tensor.cast %[[ARG1]] : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+    //  CHECK-NEXT: %[[GENERIC_OP:.*]] = linalg.generic
+    //  CHECK-SAME: ins(%[[ARG0]], %[[CAST_ARG1]] : tensor<2x3x4xf32>, tensor<2x3x4xf32>)
+    //  CHECK-SAME: outs({{.*}} : tensor<2x3x4xf32>)
+}
+
+// -----
+
+#map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+// CHECK-LABEL: func @static_output_with_cast
+// CHECK-SAME:  (%[[ARG0:.*]]: tensor<?x?x?xf32>, %[[ARG1:.*]]: tensor<?x?x?xf32>, %[[ARG2:.*]]: tensor<2x3x4xf32>) -> tensor<2x3x4xf32> {
+func @static_output_with_cast(%arg0 : tensor<?x?x?xf32>, %arg1: tensor<?x?x?xf32>, %arg2: tensor<2x3x4xf32>) -> tensor<2x3x4xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %0 = tensor.dim %arg2, %c0 : tensor<2x3x4xf32>
+  %1 = tensor.dim %arg2, %c1 : tensor<2x3x4xf32>
+  %2 = tensor.dim %arg2, %c2 : tensor<2x3x4xf32>
+  %3 = linalg.init_tensor [%0, %1, %2] : tensor<?x?x?xf32>
+  %4 = tensor.cast %3 : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+  %5 = tensor.cast %arg1 : tensor<?x?x?xf32> to tensor<2x?x?xf32>
+  %6 = linalg.generic {
+    indexing_maps = [#map, #map, #map],
+    iterator_types = ["parallel", "parallel", "parallel"]
+  } ins(%arg0, %5 : tensor<?x?x?xf32>, tensor<2x?x?xf32>)
+    outs(%4 : tensor<2x3x4xf32>) {
+  ^bb0(%arg3 : f32, %arg4 : f32, %arg5 : f32):
+    %9 = arith.addf %arg3, %arg4 : f32
+    linalg.yield %9 : f32
+  } -> (tensor<2x3x4xf32>)
+  return %6: tensor<2x3x4xf32>
+    //  CHECK:      %[[CAST_ARG0:.*]] = tensor.cast %[[ARG0]] : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+    //  CHECK-NEXT: %[[CAST_ARG1:.*]] = tensor.cast %[[ARG1]] : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+    //  CHECK-NEXT: %[[GENERIC_OP:.*]] = linalg.generic
+    //  CHECK-SAME: ins(%[[CAST_ARG0]], %[[CAST_ARG1]] : tensor<2x3x4xf32>, tensor<2x3x4xf32>)
+    //  CHECK-SAME: outs({{.*}} : tensor<2x3x4xf32>)
+}
+
+// -----
+
+#map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+// CHECK-LABEL: func @cast_source
+// CHECK-SAME:  (%[[ARG0:.*]]: tensor<2x3x4xf32>, %[[ARG1:.*]]: tensor<2x3x4xf32>) -> tensor<2x3x4xf32> {
+func @cast_source(%arg0 : tensor<2x3x4xf32>, %arg1: tensor<2x3x4xf32>) -> tensor<2x3x4xf32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %0 = tensor.dim %arg0, %c0 : tensor<2x3x4xf32>
+  %1 = tensor.dim %arg0, %c1 : tensor<2x3x4xf32>
+  %2 = tensor.dim %arg0, %c2 : tensor<2x3x4xf32>
+  %3 = linalg.init_tensor [%0, %1, %2] : tensor<?x?x?xf32>
+  %4 = tensor.cast %arg0 : tensor<2x3x4xf32> to tensor<?x?x?xf32>
+  %5 = tensor.cast %arg1 : tensor<2x3x4xf32> to tensor<?x?x?xf32>
+  %6 = linalg.generic {
+    indexing_maps = [#map, #map, #map],
+    iterator_types = ["parallel", "parallel", "parallel"]
+  } ins(%4, %5 : tensor<?x?x?xf32>, tensor<?x?x?xf32>)
+    outs(%3 : tensor<?x?x?xf32>) {
+  ^bb0(%arg2 : f32, %arg3 : f32, %arg4 : f32):
+    %9 = arith.addf %arg2, %arg3 : f32
+    linalg.yield %9 : f32
+  } -> (tensor<?x?x?xf32>)
+  %7 = tensor.cast %6 : tensor<?x?x?xf32> to tensor<2x3x4xf32>
+  return %7: tensor<2x3x4xf32>
+    //  CHECK:      %[[GENERIC_OP:.*]] = linalg.generic
+    //  CHECK-SAME: ins(%[[ARG0]], %[[ARG1]] : tensor<2x3x4xf32>, tensor<2x3x4xf32>)
+    //  CHECK-SAME: outs({{.*}} : tensor<2x3x4xf32>)
+}
