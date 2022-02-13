@@ -650,3 +650,136 @@ func @no_fold_pad_fill_value_mismatch() -> tensor<412x276xf32> {
   } : tensor<400x273xf32> to tensor<412x276xf32>
   return %pad : tensor<412x276xf32>
 }
+
+// -----
+
+#map0 = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10) -> (d0, d2, d3, d4, d1, d6, d5, d7, d8, d9, d10)>
+#map1 = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10) -> (d8, d1, d6)>
+#map2 = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10) -> (d3, d1, d6, d8)>
+func @trivial_broadcast(%arg0 : tensor<1x1x3x1x4x5x1x1x6x1x1xf32>, %arg1 : tensor<6x4x5xf32>) -> 
+  (tensor<6x4x5xf32>, tensor<3x4x5x6xf32>) {
+  %init = linalg.init_tensor [3, 4, 5, 6] : tensor<3x4x5x6xf32>
+  %0:2 = linalg.generic {
+    indexing_maps = [#map0, #map1, #map1, #map2],
+    iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "parallel",
+                      "parallel", "parallel", "parallel", "parallel", "parallel"]}
+    ins(%arg0, %arg1 : tensor<1x1x3x1x4x5x1x1x6x1x1xf32>, tensor<6x4x5xf32>)
+    outs(%arg1, %init : tensor<6x4x5xf32>, tensor<3x4x5x6xf32>) {
+      ^bb0(%b0: f32, %b1 : f32, %b2 : f32, %b3 : f32):
+        linalg.yield %b1, %b0 : f32, f32
+    } -> (tensor<6x4x5xf32>, tensor<3x4x5x6xf32>)
+  return %0#0, %0#1 : tensor<6x4x5xf32>, tensor<3x4x5x6xf32>
+}
+//      CHECK: func @trivial_broadcast(
+// CHECK-SAME:     %[[ARG0:.+]]: tensor<1x1x3x1x4x5x1x1x6x1x1xf32>
+// CHECK-SAME:     %[[ARG1:.+]]: tensor<6x4x5xf32>
+//      CHECK:   %[[RESHAPE:.+]] = tensor.collapse_shape %[[ARG0]] {{\[}}[0, 1, 2], [3, 4], [5], [6, 7, 8, 9, 10]{{\]}}
+//      CHECK:   return %[[ARG1]], %[[RESHAPE]]
+
+// -----
+
+#map0 = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10) -> (d0, d2, d3, d4, d1, d6, d5, d7, d8, d9, d10)>
+#map1 = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10) -> (d8, d1, d6)>
+#map2 = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10) -> (d3, d1, d6, d8)>
+func @trivial_broadcast_result(%arg0 : tensor<3x4x5x6xf32>, %arg1 : tensor<6x4x5xf32>) -> 
+  (tensor<6x4x5xf32>, tensor<1x1x3x1x4x5x1x1x6x1x1xf32>) {
+  %init = linalg.init_tensor [1, 1, 3, 1, 4, 5, 1, 1, 6, 1, 1] : tensor<1x1x3x1x4x5x1x1x6x1x1xf32>
+  %0:2 = linalg.generic {
+    indexing_maps = [#map2, #map1, #map1, #map0],
+    iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel", "parallel",
+                      "parallel", "parallel", "parallel", "parallel", "parallel"]}
+    ins(%arg0, %arg1 : tensor<3x4x5x6xf32>, tensor<6x4x5xf32>)
+    outs(%arg1, %init : tensor<6x4x5xf32>, tensor<1x1x3x1x4x5x1x1x6x1x1xf32>) {
+      ^bb0(%b0: f32, %b1 : f32, %b2 : f32, %b3 : f32):
+        linalg.yield %b1, %b0 : f32, f32
+    } -> (tensor<6x4x5xf32>, tensor<1x1x3x1x4x5x1x1x6x1x1xf32>)
+  return %0#0, %0#1 : tensor<6x4x5xf32>, tensor<1x1x3x1x4x5x1x1x6x1x1xf32>
+}
+//      CHECK: func @trivial_broadcast_result(
+// CHECK-SAME:     %[[ARG0:.+]]: tensor<3x4x5x6xf32>
+// CHECK-SAME:     %[[ARG1:.+]]: tensor<6x4x5xf32>
+//      CHECK:   %[[RESHAPE:.+]] = tensor.expand_shape %[[ARG0]] {{\[}}[0, 1, 2], [3, 4], [5], [6, 7, 8, 9, 10]{{\]}}
+//      CHECK:   return %[[ARG1]], %[[RESHAPE]]
+
+// -----
+
+func @scalar_copy(%arg0 : tensor<f32>) -> tensor<1x1xf32> {
+  %init = linalg.init_tensor [1, 1] : tensor<1x1xf32>
+  %0 = linalg.generic {
+    indexing_maps = [affine_map<(d0, d1) -> ()>, affine_map<(d0, d1) -> (d1, d0)>],
+    iterator_types = ["parallel", "parallel"]}
+    ins(%arg0 : tensor<f32>) outs(%init : tensor<1x1xf32>) {
+      ^bb0(%b0 : f32, %b1 : f32):
+        linalg.yield %b0 : f32
+    } -> tensor<1x1xf32>
+  return %0 : tensor<1x1xf32>
+}
+//      CHECK: func @scalar_copy(
+// CHECK-SAME:     %[[ARG0:.+]]: tensor<f32>
+//      CHECK:   %[[RESHAPE:.+]] = tensor.expand_shape %[[ARG0]] []
+//      CHECK:   return %[[RESHAPE]]
+
+// -----
+
+// Op cannot be removed if it is not just a copy.
+func @no_remove_op(%arg0 : tensor<?xf32>) -> tensor<?xf32> {
+  %0 = linalg.generic {
+    indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> (d0)>],
+    iterator_types = ["parallel"]}
+    ins(%arg0 : tensor<?xf32>) outs(%arg0 : tensor<?xf32>) {
+      ^bb0(%b0 : f32, %b1 : f32):
+        %0 = arith.addf %b0, %b0 : f32
+        linalg.yield %0 : f32
+    } -> tensor<?xf32>
+  return %0 : tensor<?xf32>
+}
+//      CHECK: func @no_remove_op(
+// CHECK-SAME:     %[[ARG0:[a-zA-Z0-9]+]]: tensor<?xf32>)
+// CHECK-NEXT:   %[[RETURN:.+]] = linalg.generic
+// CHECK-SAME:       ins(%[[ARG0]] :
+// CHECK-SAME:       outs(%[[ARG0]] :
+// CHECK-NEXT:   return %[[RETURN]]
+
+// -----
+
+func @no_remove_op_memref(%arg0 : memref<?xf32>, %arg1 : memref<?xf32>) {
+  linalg.generic {
+    indexing_maps = [affine_map<(d0) -> (d0)>, affine_map<(d0) -> (d0)>],
+    iterator_types = ["parallel"]}
+    ins(%arg0 : memref<?xf32>) outs(%arg1 : memref<?xf32>) {
+      ^bb0(%b0 : f32, %b1 : f32):
+        %0 = arith.addf %b0, %b0 : f32
+        linalg.yield %0 : f32
+    }
+  return
+}
+//      CHECK: func @no_remove_op_memref(
+// CHECK-SAME:     %[[ARG0:[a-zA-Z0-9]+]]: memref<?xf32>
+// CHECK-SAME:     %[[ARG1:[a-zA-Z0-9]+]]: memref<?xf32>
+// CHECK-NEXT:   linalg.generic
+// CHECK-SAME:       ins(%[[ARG0]] :
+// CHECK-SAME:       outs(%[[ARG1]] :
+// CHECK-NEXT:   return
+
+// -----
+
+// Check that op is not canonicalized as a copy when one of the operands is not 
+// a trivial copy or broadcast.
+#map0 = affine_map<(d0, d1) -> (d0, d1)>
+#map1 = affine_map<(d0, d1) -> (d1)>
+func @no_remove_op_(%arg0 : tensor<?x?xf32>, %arg1 : tensor<?xf32>) -> (tensor<?x?xf32>, tensor<?x?xf32>) {
+  %0:2 = linalg.generic {
+    indexing_maps = [#map0, #map1, #map0, #map0],
+    iterator_types = ["parallel", "parallel"]}
+    ins(%arg0, %arg1 : tensor<?x?xf32>, tensor<?xf32>) outs(%arg0, %arg0 : tensor<?x?xf32>, tensor<?x?xf32>) {
+      ^bb0(%b0 : f32, %b1 : f32, %b2 : f32, %b3 : f32):
+        linalg.yield %b0, %b1 : f32, f32
+    } -> (tensor<?x?xf32>, tensor<?x?xf32>)
+  return %0#0, %0#1 : tensor<?x?xf32>, tensor<?x?xf32>
+}
+//      CHECK: func @no_remove_op(
+// CHECK-SAME:     %[[ARG0:[a-zA-Z0-9]+]]: tensor<?xf32>)
+// CHECK-NEXT:   %[[RETURN:.+]] = linalg.generic
+// CHECK-SAME:       ins(%[[ARG0]] :
+// CHECK-SAME:       outs(%[[ARG0]] :
+// CHECK-NEXT:   return %[[RETURN]]

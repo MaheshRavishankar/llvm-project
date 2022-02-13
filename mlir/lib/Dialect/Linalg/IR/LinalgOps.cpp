@@ -770,6 +770,164 @@ struct DeduplicateGenericOpInputs : public OpRewritePattern<GenericOp> {
   }
 };
 
+/// Given the operand and result indexing maps and types check if all
+/// expressions used to access the operand and the result are the same, except
+/// for unit dimensions.
+static Optional<SmallVector<ReassociationIndices>>
+checkForTrivialBroadcast(AffineMap operandIndexingMap, Type operandType,
+                         AffineMap resultIndexingMap, Type resultType) {
+  if (!operandIndexingMap.isProjectedPermutation() ||
+      !resultIndexingMap.isProjectedPermutation())
+    return llvm::None;
+  unsigned operandPos = 0, resultPos = 0;
+  ArrayRef<int64_t> operandShape = {}, resultShape = {};
+  if (auto operandTensorType = operandType.dyn_cast<RankedTensorType>())
+    operandShape = operandTensorType.getShape();
+  if (auto resultTensorType = resultType.dyn_cast<RankedTensorType>())
+    resultShape = resultTensorType.getShape();
+  ArrayRef<AffineExpr> operandExprs = operandIndexingMap.getResults(),
+                       resultExprs = resultIndexingMap.getResults();
+  SmallVector<ReassociationIndices> reassociation;
+  ReassociationIndices currReassociation;
+  unsigned foldedDim = 0;
+  while (operandPos < operandShape.size() && resultPos < resultShape.size()) {
+    // If the access expressions are the same, it could still be a copy.
+    if (operandExprs[operandPos] == resultExprs[resultPos]) {
+      currReassociation.push_back(foldedDim++);
+      reassociation.emplace_back(ReassociationIndices{});
+      std::swap(currReassociation, reassociation.back());
+      operandPos++, resultPos++;
+      continue;
+    }
+    // Check if the operand is unit-dimension, if so, could still be a copy.
+    if (operandShape[operandPos] == 1) {
+      currReassociation.push_back(foldedDim++);
+      operandPos++;
+      continue;
+    }
+    // Check if the operand is unit-dimension, if so, could still be a copy.
+    if (resultShape[resultPos] == 1) {
+      currReassociation.push_back(foldedDim++);
+      resultPos++;
+      continue;
+    }
+    // If none of these hold, not a trivial broadcast or copy.
+    return llvm::None;
+  }
+  // currReassociation should always be empty at this stage. If not just push it
+  // into the list.
+  if (!currReassociation.empty()) {
+    reassociation.emplace_back(std::move(currReassociation));
+  }
+
+  // For the case where operand or result is a 0D tensor (or scalar) the
+  // reassociation will be empty. In other cases, check for trailing dimensions
+  // in operand/result and append folding to the last ReassociationIndices.
+  ReassociationIndices trailingDimFolding;
+  auto checkForTrailingUnitDims =
+      [&](unsigned pos, ArrayRef<int64_t> shape) -> LogicalResult {
+    while (pos < shape.size()) {
+      if (shape[pos] != 1)
+        return failure();
+      pos++;
+      trailingDimFolding.push_back(foldedDim++);
+    }
+    return success();
+  };
+  if (failed(checkForTrailingUnitDims(operandPos, operandShape)) ||
+      failed(checkForTrailingUnitDims(resultPos, resultShape)))
+    return llvm::None;
+
+  if (!reassociation.empty())
+    reassociation.back().append(trailingDimFolding);
+
+  return reassociation;
+}
+
+/// Erase generic ops that are either copies or trivial broadcasts (where the
+/// broadcast dimension is 1) of the operands.
+struct EraseTrivialCopyOrBroadcastOp : public OpRewritePattern<GenericOp> {
+  using OpRewritePattern<GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(GenericOp genericOp,
+                                PatternRewriter &rewriter) const override {
+    LinalgOp linalgOp = cast<LinalgOp>(genericOp.getOperation());
+    if (!genericOp.hasTensorSemantics())
+      return failure();
+
+    // The body must be just a yield operation.
+    Block &body = genericOp.region().front();
+    if (!llvm::hasSingleElement(body))
+      return failure();
+    auto yieldOp = dyn_cast<linalg::YieldOp>(body.getTerminator());
+    if (!yieldOp)
+      return failure();
+
+    struct ReplacementInfo {
+      unsigned operandNumber;
+      SmallVector<ReassociationIndices> reassociation;
+    };
+    SmallVector<ReplacementInfo> replacementInfo;
+    // Check if all operands are copy or trivial-broadcasts. Collect information
+    // needed, while not creating any ops (to avoid dead code generation on
+    // failure).
+    // TODO: It is possible to keep track of the non-copy/non-trivial-broadcast
+    // operands and create a new generic op. Avoiding it to reduce complexity
+    // here.
+    for (const auto &yieldVal : llvm::enumerate(yieldOp.values())) {
+      auto yieldArg = yieldVal.value().dyn_cast<BlockArgument>();
+      if (!yieldArg || yieldArg.getOwner() != &body)
+        return failure();
+      unsigned argumentNumber = yieldArg.getArgNumber();
+      OpOperand &operand = genericOp->getOpOperand(argumentNumber);
+      OpResult result = genericOp->getResult(yieldVal.index());
+
+      Optional<SmallVector<ReassociationIndices>> reassociation =
+          checkForTrivialBroadcast(
+              linalgOp.getTiedIndexingMap(&operand), operand.get().getType(),
+              linalgOp.getTiedIndexingMapForResult(result), result.getType());
+
+      if (!reassociation)
+        return failure();
+      ReplacementInfo info{operand.getOperandNumber(),
+                           std::move(reassociation.getValue())};
+      replacementInfo.emplace_back(std::move(info));
+    }
+
+    // All operands are copy or trivial-broadcasts, find replacement values. They are either the operand
+    // value, or operand followed by a reshape to match the result shape.
+    SmallVector<Value> replacements;
+    Location loc = genericOp->getLoc();
+    replacements.reserve(genericOp->getNumResults());
+    for (const auto &info : llvm::enumerate(replacementInfo)) {
+      Value operand = genericOp->getOperand(info.value().operandNumber);
+      Value result = genericOp->getResult(info.index());
+      Value replacement = operand;
+      int64_t operandRank = 0, resultRank = 0;
+      if (auto operandTensorType =
+              operand.getType().dyn_cast<RankedTensorType>())
+        operandRank = operandTensorType.getRank();
+      if (auto resultTensorType = result.getType().dyn_cast<RankedTensorType>())
+        resultRank = resultTensorType.getRank();
+      if (operandRank > resultRank) {
+        replacement = rewriter.create<tensor::CollapseShapeOp>(
+            loc, replacement, info.value().reassociation);
+      } else if (operandRank < resultRank) {
+        replacement = rewriter.create<tensor::ExpandShapeOp>(
+            loc, result.getType(), replacement, info.value().reassociation);
+      }
+      if (replacement.getType() != result.getType()) {
+        replacement =
+            rewriter.create<tensor::CastOp>(loc, result.getType(), replacement);
+      }
+      replacements.push_back(replacement);
+    }
+
+    rewriter.replaceOp(genericOp, replacements);
+    return success();
+  }
+};
+
 /// Remove generic operations (on tensors) that are just copying
 /// the values from inputs to the results. Requirements are
 /// 1) All iterator types are parallel
@@ -780,13 +938,15 @@ struct EraseIdentityGenericOp : public OpRewritePattern<GenericOp> {
 
   LogicalResult matchAndRewrite(GenericOp genericOp,
                                 PatternRewriter &rewriter) const override {
-    // Check all indexing maps are identity.
-    if (llvm::any_of(genericOp.getIndexingMaps(),
-                     [](AffineMap map) { return !map.isIdentity(); }))
+    // In the buffer case, we need to check exact buffer equality.
+    if (!genericOp.hasBufferSemantics())
+      return failure();
+    if (genericOp.getNumInputs() != 1 || genericOp.getNumOutputs() != 1 ||
+        genericOp.getInputOperand(0)->get() !=
+            genericOp.getOutputOperand(0)->get())
       return failure();
 
-    // Check that the body of the linalg operation is just a linalg.yield
-    // operation.
+    // The body must be just a yield operation.
     Block &body = genericOp.region().front();
     if (!llvm::hasSingleElement(body))
       return failure();
@@ -794,38 +954,7 @@ struct EraseIdentityGenericOp : public OpRewritePattern<GenericOp> {
     if (!yieldOp)
       return failure();
 
-    // In the buffer case, we need to check exact buffer equality.
-    if (genericOp.hasBufferSemantics()) {
-      if (genericOp.getNumInputs() == 1 && genericOp.getNumOutputs() == 1 &&
-          genericOp.getInputOperand(0)->get() ==
-              genericOp.getOutputOperand(0)->get()) {
-        rewriter.eraseOp(genericOp);
-        return success();
-      }
-      return failure();
-    }
-
-    // Get the argument number of the returned values. That is the operand
-    // number to use for replacing uses of this operation.
-    SmallVector<Value> returnedArgs;
-    for (const auto &yieldVal : llvm::enumerate(yieldOp.values())) {
-      auto yieldArg = yieldVal.value().dyn_cast<BlockArgument>();
-      if (!yieldArg || yieldArg.getOwner() != &body)
-        return failure();
-      unsigned argumentNumber = yieldArg.getArgNumber();
-      Value returnedArg = genericOp->getOperand(argumentNumber);
-      Type resultType = genericOp->getResult(yieldVal.index()).getType();
-      // The input can have a different type than the result, e.g. a dynamic
-      // input dimension can be turned into a static output dimension.
-      if (returnedArg.getType() != resultType)
-        returnedArg = rewriter.create<tensor::CastOp>(genericOp.getLoc(),
-                                                      resultType, returnedArg);
-      returnedArgs.push_back(returnedArg);
-    }
-
-    if (returnedArgs.size() != genericOp->getNumResults())
-      return failure();
-    rewriter.replaceOp(genericOp, returnedArgs);
+    rewriter.eraseOp(genericOp);
     return success();
   }
 };
@@ -833,7 +962,8 @@ struct EraseIdentityGenericOp : public OpRewritePattern<GenericOp> {
 
 void GenericOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                             MLIRContext *context) {
-  results.add<DeduplicateGenericOpInputs, EraseIdentityGenericOp>(context);
+  results.add<DeduplicateGenericOpInputs, EraseIdentityGenericOp,
+              EraseTrivialCopyOrBroadcastOp>(context);
 }
 
 //===----------------------------------------------------------------------===//
