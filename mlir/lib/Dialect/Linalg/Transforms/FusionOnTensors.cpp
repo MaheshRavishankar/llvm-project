@@ -224,8 +224,12 @@ SmallVector<BlockArgument> TileLoopNest::getTiedBBArgs(BlockArgument bbArg) {
     if (bbArg.getOwner()->getParentOp() != tileLoop)
       return {};
     bbArgs.push_back(bbArg);
-    OpOperand *iterArg = &tileLoop.getOpOperandForRegionIterArg(bbArg);
-    bbArg = iterArg->get().dyn_cast<BlockArgument>();
+    Optional<OpOperand *> iterArg =
+        tileLoop.getOpOperandForRegionIterArg(bbArg);
+    if (!iterArg)
+      return {};
+
+    bbArg = iterArg.getValue()->get().dyn_cast<BlockArgument>();
   }
 
   // Reverse the block arguments to order them from outer to inner.
@@ -237,7 +241,11 @@ OpOperand *TileLoopNest::getTiedIterArg(BlockArgument bbArg) {
   SmallVector<BlockArgument> bbArgs = getTiedBBArgs(bbArg);
   if (bbArgs.size() != tileLoopOps.size())
     return nullptr;
-  return &tileLoopOps.front().getOpOperandForRegionIterArg(bbArgs.front());
+  Optional<OpOperand *> iterArg =
+      tileLoopOps.front().getOpOperandForRegionIterArg(bbArgs.front());
+  if (!iterArg)
+    return nullptr;
+  return iterArg.getValue();
 }
 
 bool TileLoopNest::hasOtherUses(BlockArgument bbArg,

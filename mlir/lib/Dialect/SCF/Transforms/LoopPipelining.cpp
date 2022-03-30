@@ -133,8 +133,8 @@ bool LoopPipelinerInternal::initializeLoopInfo(
 void LoopPipelinerInternal::emitPrologue(PatternRewriter &rewriter) {
   // Initialize the iteration argument to the loop initiale values.
   for (BlockArgument &arg : forOp.getRegionIterArgs()) {
-    OpOperand &operand = forOp.getOpOperandForRegionIterArg(arg);
-    setValueMapping(arg, operand.get(), 0);
+    Optional<OpOperand *> operand = forOp.getOpOperandForRegionIterArg(arg);
+    setValueMapping(arg, operand.getValue()->get(), 0);
   }
   auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
   for (int64_t i = 0; i < maxStage; i++) {

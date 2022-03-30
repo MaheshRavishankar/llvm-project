@@ -268,7 +268,8 @@ struct ForOpInterface
     // scf::ForOp alone doesn't bufferize to a memory read, one of the uses of
     // its matching bbArg may.
     auto forOp = cast<scf::ForOp>(op);
-    return state.isValueRead(forOp.getRegionIterArgForOpOperand(opOperand));
+    return state.isValueRead(
+        forOp.getRegionIterArgForOpOperand(opOperand).getValue());
   }
 
   bool bufferizesToMemoryWrite(Operation *op, OpOperand &opOperand,
@@ -280,7 +281,7 @@ struct ForOpInterface
   SmallVector<OpResult> getAliasingOpResult(Operation *op, OpOperand &opOperand,
                                             const AnalysisState &state) const {
     auto forOp = cast<scf::ForOp>(op);
-    return {forOp.getResultForOpOperand(opOperand)};
+    return {forOp.getResultForOpOperand(opOperand).getValue()};
   }
 
   BufferRelation bufferRelation(Operation *op, OpResult opResult,
@@ -288,8 +289,9 @@ struct ForOpInterface
     // ForOp results are equivalent to their corresponding init_args if the
     // corresponding iter_args and yield values are equivalent.
     auto forOp = cast<scf::ForOp>(op);
-    OpOperand &forOperand = forOp.getOpOperandForResult(opResult);
-    auto bbArg = forOp.getRegionIterArgForOpOperand(forOperand);
+    Optional<OpOperand *> forOperand = forOp.getOpOperandForResult(opResult);
+    auto bbArg =
+        forOp.getRegionIterArgForOpOperand(*forOperand.getValue()).getValue();
     auto yieldOp =
         cast<scf::YieldOp>(forOp.getLoopBody().front().getTerminator());
     bool equivalentYield = state.areEquivalentBufferizedValues(
@@ -440,9 +442,10 @@ struct ForOpInterface
       if (!tensorType)
         continue;
 
-      OpOperand &forOperand = forOp.getOpOperandForResult(
+      Optional<OpOperand *> forOperand = forOp.getOpOperandForResult(
           forOp->getResult(operand.getOperandNumber()));
-      auto bbArg = forOp.getRegionIterArgForOpOperand(forOperand);
+      auto bbArg =
+          forOp.getRegionIterArgForOpOperand(*forOperand.getValue()).getValue();
       // Note: This is overly strict. We should check for aliasing bufferized
       // values. But we don't have a "must-alias" analysis yet.
       if (!state.areEquivalentBufferizedValues(operand.get(), bbArg))

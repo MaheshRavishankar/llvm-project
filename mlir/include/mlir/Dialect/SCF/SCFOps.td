@@ -255,47 +255,51 @@ def ForOp : SCF_Op<"for",
       return getOperation()->getNumOperands() - getNumControlOperands();
     }
     /// Get the region iter arg that corresponds to an OpOperand.
+    /// Return `llvm::None` if `opOperand` is not an iter arg of this `scf.for`.
     /// This helper prevents internal op implementation detail leakage to
     /// clients by hiding the operand / block argument mapping.
-    BlockArgument getRegionIterArgForOpOperand(OpOperand &opOperand) {
-      assert(opOperand.getOperandNumber() >= getNumControlOperands() &&
-             "expected an iter args operand");
-      assert(opOperand.getOwner() == getOperation() &&
-             "opOperand does not belong to this scf::ForOp operation");
-      return getRegionIterArgs()[
-        opOperand.getOperandNumber() - getNumControlOperands()];
+    Optional<BlockArgument> getRegionIterArgForOpOperand(OpOperand &opOperand) {
+      if (opOperand.getOwner() == getOperation () &&
+          opOperand.getOperandNumber() >= getNumControlOperands()) {
+        return getRegionIterArgs()[
+          opOperand.getOperandNumber() - getNumControlOperands()];
+      }
+      return llvm::None;
     }
     /// Get the OpOperand& that corresponds to a region iter arg.
+    /// Return `llvm::None` if `bbArg` is not a region iter arg of this `scf.for`.
     /// This helper prevents internal op implementation detail leakage to
     /// clients by hiding the operand / block argument mapping.
-    OpOperand &getOpOperandForRegionIterArg(BlockArgument bbArg) {
-      assert(bbArg.getArgNumber() >= getNumInductionVars() &&
-             "expected a bbArg that is not an induction variable");
-      assert(bbArg.getOwner()->getParentOp() == getOperation() &&
-             "bbArg does not belong to the scf::ForOp body");
-      return getOperation()->getOpOperand(
-        getNumControlOperands() + bbArg.getArgNumber() - getNumInductionVars());
+    Optional<OpOperand *> getOpOperandForRegionIterArg(BlockArgument bbArg) {
+      if (bbArg.getOwner()->getParentOp() == getOperation() &&
+          bbArg.getArgNumber() >= getNumInductionVars()) {
+        return &(getOperation()->getOpOperand(
+          getNumControlOperands() + bbArg.getArgNumber() - getNumInductionVars()));
+      }
+      return llvm::None;
     }
     /// Get the OpResult that corresponds to an OpOperand.
-    /// Assert that opOperand is an iterArg.
+    /// Return `llvm::None` if `opOperand` is not an iter arg of this `scf.for`.
     /// This helper prevents internal op implementation detail leakage to
     /// clients by hiding the operand / block argument mapping.
-    OpResult getResultForOpOperand(OpOperand &opOperand) {
-      assert(opOperand.getOperandNumber() >= getNumControlOperands() &&
-             "expected an iter args operand");
-      assert(opOperand.getOwner() == getOperation() &&
-             "opOperand does not belong to this scf::ForOp operation");
-      return getOperation()->getResult(
-        opOperand.getOperandNumber() - getNumControlOperands());
+    Optional<OpResult> getResultForOpOperand(OpOperand &opOperand) {
+      if (opOperand.getOwner() == getOperation() &&
+          opOperand.getOperandNumber() >= getNumControlOperands()) {
+        return getOperation()->getResult(
+          opOperand.getOperandNumber() - getNumControlOperands());
+      }
+      return llvm::None;
     }
     /// Get the OpOperand& that corresponds to an OpResultOpOperand.
+    /// Returns `llvm::None` if `result` is not owned by the scf.for.
     /// This helper prevents internal op implementation detail leakage to
     /// clients by hiding the operand / block argument mapping.
-    OpOperand &getOpOperandForResult(OpResult opResult) {
-      assert(opResult.getDefiningOp() == getOperation() &&
-             "opResult does not belong to the scf::ForOp operation");
-      return getOperation()->getOpOperand(
-        getNumControlOperands() + opResult.getResultNumber());
+    Optional<OpOperand *> getOpOperandForResult(OpResult opResult) {
+      if (opResult.getDefiningOp() == getOperation()) {
+        return &(getOperation()->getOpOperand(
+         getNumControlOperands() + opResult.getResultNumber()));
+      }
+      return llvm::None;
     }
 
     /// Return operands used when entering the region at 'index'. These operands

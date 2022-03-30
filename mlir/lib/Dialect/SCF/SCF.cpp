@@ -810,11 +810,12 @@ static ForOp replaceTensorCastForOpIterArg(PatternRewriter &rewriter,
   // corresponding to the `replacement` value.
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(&newBlock, newBlock.begin());
-  BlockArgument newRegionIterArg = newForOp.getRegionIterArgForOpOperand(
-      newForOp->getOpOperand(operand.getOperandNumber()));
+  Optional<BlockArgument> newRegionIterArg =
+      newForOp.getRegionIterArgForOpOperand(
+          newForOp->getOpOperand(operand.getOperandNumber()));
   Value castIn = rewriter.create<tensor::CastOp>(newForOp.getLoc(), oldType,
-                                                 newRegionIterArg);
-  newBlockTransferArgs[newRegionIterArg.getArgNumber()] = castIn;
+                                                 newRegionIterArg.getValue());
+  newBlockTransferArgs[newRegionIterArg->getArgNumber()] = castIn;
 
   // 4. Steal the old block ops, mapping to the newBlockTransferArgs.
   Block &oldBlock = forOp.getRegion().front();
@@ -824,7 +825,7 @@ static ForOp replaceTensorCastForOpIterArg(PatternRewriter &rewriter,
   auto clonedYieldOp = cast<scf::YieldOp>(newBlock.getTerminator());
   rewriter.setInsertionPoint(clonedYieldOp);
   unsigned yieldIdx =
-      newRegionIterArg.getArgNumber() - forOp.getNumInductionVars();
+      newRegionIterArg->getArgNumber() - forOp.getNumInductionVars();
   Value castOut = rewriter.create<tensor::CastOp>(
       newForOp.getLoc(), newType, clonedYieldOp.getOperand(yieldIdx));
   SmallVector<Value> newYieldOperands = clonedYieldOp.getOperands();
