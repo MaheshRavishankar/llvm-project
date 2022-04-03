@@ -2255,12 +2255,30 @@ void mlir::linalg::populateFoldReshapeOpsByCollapsingPatterns(
                                                       controlFoldingReshapes);
 }
 
+// TODO(ravishankarm): Deprecate this method and just expose `populate*` methods
+// that add individual patterns.
 void mlir::linalg::populateElementwiseOpsFusionPatterns(
     RewritePatternSet &patterns, LinalgElementwiseFusionOptions options) {
   auto *context = patterns.getContext();
-  patterns.add<FuseElementwiseOps, FoldScalarOrSplatConstant,
-               FoldConstantTranspose>(context,
-                                      options.controlElementwiseOpsFusionFn);
+  patterns.add<FuseElementwiseOps>(context,
+                                   options.controlElementwiseOpsFusionFn);
+
+  // "Fuse" splat/scalar constant with generic ops always.
+  ControlElementwiseOpsFusionFn fuseAlways = [](const OpResult & /*producer*/,
+                                                OpOperand & /*consumer*/) {
+    return true;
+  };
+  patterns.add<FoldScalarOrSplatConstant>(context, fuseAlways);
+
+  // "Fuse" constant transpose only if the operands have a single use.
+  // For now hard code this here. When deprecating this method, let caller
+  // override the control function for this pattern alone.
+  ControlElementwiseOpsFusionFn producerHasSingleUse =
+      [](const OpResult &producer, OpOperand &consumer) {
+        return producer.getOwner()->hasOneUse();
+      };
+  patterns.add<FoldConstantTranspose>(context, producerHasSingleUse);
+
   patterns.add<RemoveOutsDependency>(context);
   populateSparseTensorRewriting(patterns);
   populateFoldReshapeOpsByExpansionPatterns(patterns,
