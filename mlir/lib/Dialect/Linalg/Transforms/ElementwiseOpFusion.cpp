@@ -1151,43 +1151,24 @@ private:
 // contraction of dimensions.
 //===---------------------------------------------------------------------===//
 
-/// For an `indexingMap` that is a projected permutation, if the range is to be
-/// collapsed using the given `reassociation`, get the reassociation in the
-/// domain that would keep the map a projected permutation.
-static SmallVector<ReassociationIndices>
+/// For a given list of indices in the range of the `indexingMap` that are
+/// folded, return the indices of the corresponding domain. Return `llvm::None`
+/// on failure. Ensures that all the elements of the returned reassociation are
+/// distinct.
+static Optional<ReassociationIndices>
 getDomainReassociation(AffineMap indexingMap,
-                       ArrayRef<ReassociationIndices> rangeReassociation) {
-  assert(indexingMap.isProjectedPermutation() &&
-         "expected projected permutation map");
-  unsigned counter = 0;
-  SmallVector<ReassociationIndices> domainReassociation;
-  llvm::SmallDenseSet<unsigned, 4> processedDomainDims;
-  // Iterate over the reassociation indices.
-  for (ReassociationIndicesRef foldedRangeDims : rangeReassociation) {
-    ReassociationIndices foldedDomainDims;
-    for (auto rangeDim : foldedRangeDims) {
-      (void)rangeDim;
-      AffineDimExpr dimExpr =
-          indexingMap.getResult(counter++).cast<AffineDimExpr>();
-      foldedDomainDims.push_back(dimExpr.getPosition());
-      processedDomainDims.insert(dimExpr.getPosition());
-    }
-    domainReassociation.emplace_back(std::move(foldedDomainDims));
-  }
-  // Fill in the missing domain dims.
-  for (auto dim : llvm::seq<unsigned>(0, indexingMap.getNumDims())) {
-    if (processedDomainDims.count(dim))
-      continue;
-    ReassociationIndices vec = {dim};
-    domainReassociation.emplace_back(std::move(vec));
-  }
+                       ReassociationIndicesRef rangeReassociation) {
+  if (!indexingMap.isProjectedPermutation())
+    return llvm::None;
 
-  // Sort the reassociation using the first dimension of the folded range to
-  // not create unnecessary transposes.
-  llvm::sort(domainReassociation,
-             [](ReassociationIndicesRef lhs, ReassociationIndicesRef rhs) {
-               return lhs[0] < rhs[0];
-             });
+  ReassociationIndices domainReassociation = llvm::to_vector<4>(
+      llvm::map_range(rangeReassociation, [&](int64_t pos) -> int64_t {
+        return indexingMap.getResults()[pos]
+            .cast<AffineDimExpr>()
+            .getPosition();
+      }));
+  // The projected permutation semantics ensures that there is no repeatition of
+  // the domain indices.
   return domainReassociation;
 }
 
@@ -1236,99 +1217,174 @@ static bool isDimSequencePreserved(AffineMap indexingMap,
 }
 
 // Check if a generic op can be fused along an operand by collapsing dimensions.
-static bool isFusableWithReshapeByDimCollapse(
+static SmallVector<ReassociationIndices> isFusableWithReshapeByDimCollapse(
     GenericOp genericOp, OpOperand *fusableOperand,
     ArrayRef<ReassociationIndices> reassociation) {
   // Some basic checks for this fusion to be valid.
   if (!genericOp.hasTensorSemantics() || genericOp.getNumOutputs() != 1)
-    return false;
+    return {};
 
   if (!llvm::all_of(genericOp.getIndexingMaps(), [](AffineMap map) {
         return map.isProjectedPermutation();
       })) {
-    return false;
+    return {};
   }
 
-  // Get the reassociation for the iteration space.
-  SmallVector<ReassociationIndices> iterationReassociation =
-      getDomainReassociation(genericOp.getTiedIndexingMap(fusableOperand),
-                             reassociation);
-  if (iterationReassociation.empty()) {
-    // If the domain reassociation indices is empty, then this is a scalar op.
-    // Nothing to do.
-    return false;
-  }
-
+  llvm::SmallDenseSet<unsigned, 4> processedIterationDims;
+  AffineMap indexingMap = genericOp.getTiedIndexingMap(fusableOperand);
   auto iteratorTypes = genericOp.iterator_types().getValue();
-  ArrayRef<Attribute> iteratorTypesRef(iteratorTypes);
-  for (ReassociationIndicesRef foldedIterDims : iterationReassociation) {
-    // Check that for all indexing maps, the folded dimensions sequence is
-    // preserved.
-    if (!llvm::all_of(genericOp.getIndexingMaps(), [&](AffineMap indexingMap) {
-          return isDimSequencePreserved(indexingMap, foldedIterDims);
+  SmallVector<ReassociationIndices> domainReassociation;
+  for (ReassociationIndicesRef foldedRangeDims : reassociation) {
+    assert(!foldedRangeDims.empty() && "unexpected empty reassociation");
+
+    // Ignore dims that are not folded.
+    if (foldedRangeDims.size() == 1)
+      continue;
+
+    Optional<ReassociationIndices> foldedDomainDims =
+        getDomainReassociation(indexingMap, foldedRangeDims);
+    if (!foldedDomainDims)
+      continue;
+    ReassociationIndicesRef foldedDomainDimsRef(foldedDomainDims.getValue());
+
+    // Check that the folded iteration dims do not contain already processed
+    // dims.
+    if (llvm::any_of(foldedDomainDimsRef, [&](int64_t dim) {
+          return processedIterationDims.count(dim);
         }))
-      return false;
-    unsigned startDim = foldedIterDims[0];
-    ArrayRef<Attribute> foldedIteratorTypes =
-        iteratorTypesRef.drop_front(startDim).take_front(foldedIterDims.size());
-    // Check that all folded iterator types are either all parallel, or all
-    // reduction.
-    if (!llvm::all_of(
-            foldedIteratorTypes,
-            [](Attribute attr) { return isParallelIterator(attr); }) &&
-        !llvm::all_of(foldedIteratorTypes,
-                      [](Attribute attr) { return isReductionIterator(attr); }))
-      return false;
+      continue;
+
+    // Check that all folded iterator types are all parallel or all reductions.
+    Attribute startIteratorType = iteratorTypes[foldedDomainDimsRef[0]];
+    if (!isParallelIterator(startIteratorType) &&
+        !isReductionIterator(startIteratorType))
+      continue;
+    if (llvm::any_of(foldedDomainDimsRef, [&](int64_t dim) {
+          return iteratorTypes[dim] != startIteratorType;
+        }))
+      continue;
+
+    // If the folded dimension correspond to a "reduction" iterator type,
+    // the folded dimensions need to be "in-order". Strictly speaking this is
+    // not necessary, for reductions that are association and commutative,  but
+    // using a more strict definition of reduction for now.
+    if (isReductionIterator(startIteratorType)) {
+      bool isMonotonic = true;
+      for (auto i : llvm::seq<unsigned>(0, foldedDomainDimsRef.size() - 1)) {
+        if (foldedDomainDimsRef[i] > foldedDomainDimsRef[i + 1]) {
+          isMonotonic = false;
+          break;
+        }
+      }
+      if (!isMonotonic)
+        continue;
+    }
+
+    // Check that the sequence is preserved in all indexing maps.
+    if (llvm::any_of(genericOp.getIndexingMaps(), [&](AffineMap indexingMap) {
+          return !isDimSequencePreserved(indexingMap,
+                                         foldedDomainDims.getValue());
+        }))
+      continue;
+
+    processedIterationDims.insert(foldedDomainDimsRef.begin(),
+                                  foldedDomainDimsRef.end());
+    domainReassociation.emplace_back(foldedDomainDimsRef.begin(),
+                                     foldedDomainDimsRef.end());
   }
-  return true;
+
+  return domainReassociation;
 }
 
 /// Helper class to carry state while collapsing the `linalg.generic` op.
 namespace {
 class CollapsingInfo {
 public:
-  CollapsingInfo(SmallVector<ReassociationIndices> &&reassociation) {
-    iterationReassociation = std::move(reassociation);
-    for (const auto &foldedIterDims : enumerate(iterationReassociation)) {
-      foldedDimStartToSequenceMap[foldedIterDims.value()[0]] =
-          foldedIterDims.index();
+  LogicalResult initialize(unsigned origLoopDim,
+                           ArrayRef<ReassociationIndices> foldedIterationDims) {
+    llvm::SmallDenseSet<int64_t, 4> processedDims;
+    // Find all the dims that are folded.
+    for (ReassociationIndicesRef foldedIterationDim : foldedIterationDims) {
+      if (foldedIterationDim.empty())
+        continue;
+      // If the folded dims contains dims already folded, thats illegal
+      // specification. Repition within a list is also illegal.
+      for (auto dim : foldedIterationDim) {
+        if (dim >= origLoopDim)
+          return failure();
+        if (processedDims.count(dim))
+          return failure();
+        processedDims.insert(dim);
+      }
+      collapsedOpToOrigOpIterationDim.emplace_back(foldedIterationDim.begin(),
+                                                   foldedIterationDim.end());
     }
+    if (processedDims.size() > origLoopDim)
+      return failure();
+
+    // Add all the preserved dims of the original op as single
+    // elements to `collapsedOpToOrigOpIterationDim`.
+    for (auto dim : llvm::seq<int64_t>(0, origLoopDim)) {
+      if (processedDims.count(dim))
+        continue;
+      collapsedOpToOrigOpIterationDim.emplace_back(ReassociationIndices{dim});
+    }
+
+    llvm::sort(collapsedOpToOrigOpIterationDim,
+               [&](ReassociationIndicesRef lhs, ReassociationIndicesRef rhs) {
+                 return lhs[0] < rhs[0];
+               });
+    origOpToCollapsedOpIterationDim.resize(origLoopDim);
+    for (auto foldedDims : llvm::enumerate(collapsedOpToOrigOpIterationDim)) {
+      for (auto dim : enumerate(foldedDims.value()))
+        origOpToCollapsedOpIterationDim[dim.value()] =
+            std::make_pair<int64_t, unsigned>(foldedDims.index(), dim.index());
+    }
+    return success();
   }
 
-  // Returns the iteration space reassociation.
-  ArrayRef<ReassociationIndices> getReassociationIndices() {
-    return iterationReassociation;
+  /// Return mapping from collapsed loop domain to original loop domain.
+  ArrayRef<ReassociationIndices> getCollapsedOpToOrigOpMapping() {
+    return collapsedOpToOrigOpIterationDim;
   }
 
-  // Returns true if the given dimension is the start of a sequence of folded
-  // dimensions.
-  bool isDimStartOfFoldedDims(unsigned dim) {
-    return foldedDimStartToSequenceMap.count(dim);
+  /// Return mapping from original loop domain to collapsed loop domain. The
+  /// mapping is a pair. First value is the dimension in the collapsed loop that
+  /// the original loop is mapped to. Second is the relative position in folded
+  /// list of this domain. For example if the original loop domain is 3D, and
+  /// the collapsed loop domain is folding all of it, i.e.
+  ///
+  /// ```
+  /// collapsedOpToOrigOpMapping = [[0, 1, 2] [3, 4]]`
+  /// ```
+  ///
+  /// then
+  ///
+  /// ```
+  ///  origOpToCollapsedOpMapping[0] = {0, 0};
+  ///  origOpToCollapsedOpMapping[0] = {0, 1};
+  ///  origOpToCollapsedOpMapping[0] = {0, 2};
+  ///  origOpToCollapsedOpMapping[0] = {1, 0};
+  ///  origOpToCollapsedOpMapping[0] = {1, 1};
+  /// ```
+  ///
+  ArrayRef<std::pair<int64_t, unsigned>> getOrigOpToCollapsedOpMapping() {
+    return origOpToCollapsedOpIterationDim;
   }
 
-  // Return the folded dimensions starting at `dim`.
-  ReassociationIndicesRef getFoldedDimsStartingAt(unsigned dim) {
-    assert(foldedDimStartToSequenceMap.count(dim) &&
-           "invalid start dim of folded dim "
-           "sequence");
-    return iterationReassociation[foldedDimStartToSequenceMap[dim]];
-  }
-
-  // For a dim in the original op, return the dim in the collapsed op, that it
-  // is mapped to. Expectes `dim` to be start of a folded dimension sequence.
-  unsigned getDimInCollapsedOpForStartOfFoldedDims(unsigned dim) {
-    assert(foldedDimStartToSequenceMap.count(dim) &&
-           "invalid start dim of folded dim sequence");
-    return foldedDimStartToSequenceMap[dim];
+  /// Return the collapsed op iteration domain rank.
+  unsigned getCollapsedOpIterationRank() {
+    return collapsedOpToOrigOpIterationDim.size();
   }
 
 private:
-  /// Reassociation describing the folded iteration space dimensions.
-  SmallVector<ReassociationIndices> iterationReassociation;
+  /// Map from the iteration domain index in collapsed op to the iteration
+  /// domain indices in the original op.
+  SmallVector<ReassociationIndices> collapsedOpToOrigOpIterationDim;
 
-  /// Map from the starting dimensions of the folded dimension sequences to
-  /// their index in `iterationReassociation`.
-  llvm::DenseMap<unsigned, unsigned> foldedDimStartToSequenceMap;
+  /// Map from iteration domain index in the original op to the iteration domain
+  /// index in the collapsed op.
+  SmallVector<std::pair<int64_t, unsigned>> origOpToCollapsedOpIterationDim;
 };
 } // namespace
 
@@ -1339,7 +1395,7 @@ getCollapsedOpIteratorTypes(ArrayRef<Attribute> iteratorTypes,
                             CollapsingInfo &collapsingInfo) {
   SmallVector<StringRef> collapsedIteratorTypes;
   for (ReassociationIndicesRef foldedIterDims :
-       collapsingInfo.getReassociationIndices()) {
+       collapsingInfo.getCollapsedOpToOrigOpMapping()) {
     assert(!foldedIterDims.empty() &&
            "reassociation indices expected to have non-empty sets");
     // Just pick the iterator type of the first folded dim. Pre-condition checks
@@ -1359,15 +1415,19 @@ static AffineMap getCollapsedOpIndexingMap(AffineMap indexingMap,
   assert(indexingMap.isProjectedPermutation() &&
          "expected indexing map to be projected permutation");
   SmallVector<AffineExpr> resultExprs;
+  auto origOpToCollapsedOpMapping =
+      collapsingInfo.getOrigOpToCollapsedOpMapping();
   for (auto expr : indexingMap.getResults()) {
     unsigned dim = expr.cast<AffineDimExpr>().getPosition();
-    if (collapsingInfo.isDimStartOfFoldedDims(dim)) {
-      resultExprs.push_back(getAffineDimExpr(
-          collapsingInfo.getDimInCollapsedOpForStartOfFoldedDims(dim),
-          context));
-    }
+    // If the dim is not the first of the collapsed dim, do nothing.
+    if (origOpToCollapsedOpMapping[dim].second != 0)
+      continue;
+    // The next n-dims are guaranteed to be collapsed. So just use the
+    // iteration dimension of the collapsed op.
+    resultExprs.push_back(
+        getAffineDimExpr(origOpToCollapsedOpMapping[dim].first, context));
   }
-  return AffineMap::get(collapsingInfo.getReassociationIndices().size(), 0,
+  return AffineMap::get(collapsingInfo.getCollapsedOpIterationRank(), 0,
                         resultExprs, context);
 }
 
@@ -1377,11 +1437,20 @@ static SmallVector<ReassociationIndices>
 getOperandReassociation(AffineMap indexingMap, CollapsingInfo &collapsingInfo) {
   unsigned counter = 0;
   SmallVector<ReassociationIndices> operandReassociation;
-  for (auto expr : indexingMap.getResults()) {
-    unsigned dim = expr.cast<AffineDimExpr>().getPosition();
-    if (collapsingInfo.isDimStartOfFoldedDims(dim)) {
+  auto origOpToCollapsedOpMapping =
+      collapsingInfo.getOrigOpToCollapsedOpMapping();
+  auto collapsedOpToOrigOpMapping =
+      collapsingInfo.getCollapsedOpToOrigOpMapping();
+  while (counter < indexingMap.getNumResults()) {
+    unsigned dim =
+        indexingMap.getResult(counter).cast<AffineDimExpr>().getPosition();
+    if (origOpToCollapsedOpMapping[dim].second == 0) {
+      // This is the start of a collapsed dimensions of the iteration that
+      // is gauranteed to be preserved in the indexing map. The number of folded
+      // dims is obtained from the collapsed op to original op mapping.
       unsigned numFoldedDims =
-          collapsingInfo.getFoldedDimsStartingAt(dim).size();
+          collapsedOpToOrigOpMapping[origOpToCollapsedOpMapping[dim].first]
+              .size();
       auto range = llvm::seq<unsigned>(counter, counter + numFoldedDims);
       operandReassociation.emplace_back(range.begin(), range.end());
       counter += numFoldedDims;
@@ -1431,7 +1500,8 @@ void generateCollapsedIndexingRegion(Location loc, Block *block,
   //   i1 = (i_{folded} / d2) % d1
   //   i0 = i_{folded} / (d1 * d2)
   llvm::DenseMap<unsigned, Value> indexReplacementVals;
-  for (auto &foldedDims : enumerate(collapsingInfo.getReassociationIndices())) {
+  for (auto &foldedDims :
+       enumerate(collapsingInfo.getCollapsedOpToOrigOpMapping())) {
     ReassociationIndicesRef foldedDimsRef(foldedDims.value());
     Value newIndexVal =
         rewriter.create<linalg::IndexOp>(loc, foldedDims.index());
@@ -1451,24 +1521,23 @@ void generateCollapsedIndexingRegion(Location loc, Block *block,
 }
 
 /// Implementation of fusion with reshape operation by collapsing dimensions.
-static Optional<SmallVector<Value>>
-fuseWithReshapeByCollapsing(GenericOp genericOp, Operation *reshapeOp,
-                            OpOperand *fusableOpOperand,
-                            PatternRewriter &rewriter) {
-  SmallVector<ReassociationIndices> reassociation =
-      isa<tensor::CollapseShapeOp>(reshapeOp)
-          ? cast<tensor::CollapseShapeOp>(reshapeOp).getReassociationIndices()
-          : cast<tensor::ExpandShapeOp>(reshapeOp).getReassociationIndices();
-  assert(isFusableWithReshapeByDimCollapse(genericOp, fusableOpOperand,
-                                           reassociation) &&
-         "preconditions for fusing with reshape by collapse failed");
-
-  CollapsingInfo collapsingInfo(getDomainReassociation(
-      genericOp.getTiedIndexingMap(fusableOpOperand), reassociation));
-  // Check for trivial no transformation cases. In that case return nothing.
-  if (collapsingInfo.getReassociationIndices().size() ==
-      genericOp.getNumLoops())
+static Optional<SmallVector<Value>> collapseGenericOpIterationDims(
+    GenericOp genericOp, ArrayRef<ReassociationIndices> foldedIterationDims,
+    OpOperand *fusableOpOperand, PatternRewriter &rewriter) {
+  // Bail on trivial no-op cases.
+  if (genericOp.getNumLoops() <= 1 || foldedIterationDims.empty() ||
+      llvm::all_of(foldedIterationDims, [](ReassociationIndicesRef foldedDims) {
+        return foldedDims.size() <= 1;
+      }))
     return llvm::None;
+
+  CollapsingInfo collapsingInfo;
+  if (failed(collapsingInfo.initialize(genericOp.getNumLoops(),
+                                       foldedIterationDims))) {
+    rewriter.notifyMatchFailure(genericOp,
+                                "illegal to collapsed specified dimensions");
+    return llvm::None;
+  }
 
   // Get the iterator types for the operand.
   SmallVector<StringRef> iteratorTypes = getCollapsedOpIteratorTypes(
@@ -1480,8 +1549,7 @@ fuseWithReshapeByCollapsing(GenericOp genericOp, Operation *reshapeOp,
         return getCollapsedOpIndexingMap(map, collapsingInfo);
       }));
 
-  Location loc =
-      rewriter.getFusedLoc({genericOp->getLoc(), reshapeOp->getLoc()});
+  Location loc = genericOp->getLoc();
 
   // Get the input operands.
   auto inputOperands = llvm::to_vector(
@@ -1576,14 +1644,17 @@ public:
       if (!reshapeOp)
         continue;
 
-      if (!isFusableWithReshapeByDimCollapse(
-              genericOp, opOperand, reshapeOp.getReassociationIndices()) ||
+      SmallVector<ReassociationIndices> collapsableIterationDims =
+          isFusableWithReshapeByDimCollapse(
+              genericOp, opOperand, reshapeOp.getReassociationIndices());
+      if (collapsableIterationDims.empty() ||
           !controlFoldingReshapes(reshapeOp->getResult(0), *opOperand)) {
         continue;
       }
 
-      Optional<SmallVector<Value>> replacements = fuseWithReshapeByCollapsing(
-          genericOp, reshapeOp, opOperand, rewriter);
+      Optional<SmallVector<Value>> replacements =
+          collapseGenericOpIterationDims(genericOp, collapsableIterationDims,
+                                         opOperand, rewriter);
       if (!replacements) {
         return rewriter.notifyMatchFailure(
             genericOp, "failed to do the fusion by collapsing transformation");
