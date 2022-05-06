@@ -601,7 +601,7 @@ mlir::linalg::LinalgTileAndFuseTensorOpsPattern::returningMatchAndRewrite(
                                          rootOp.getNumLoops());
   SmallVector<int64_t> rootInterchange =
       options.tileInterchange.empty()
-          ? llvm::to_vector<6>(llvm::seq<int64_t>(0, rootOp.getNumLoops()))
+          ? llvm::to_vector(llvm::seq<int64_t>(0, rootOp.getNumLoops()))
           : SmallVector<int64_t>(options.tileInterchange.begin(),
                                  options.tileInterchange.begin() +
                                      rootOp.getNumLoops());
@@ -619,19 +619,45 @@ mlir::linalg::LinalgTileAndFuseTensorOpsPattern::returningMatchAndRewrite(
         op, "expect the tile interchange permutes the root loops");
 
   // Tile `rootOp` and fuse its producers.
-  FailureOr<TileLoopNest> tileLoopNest =
-      tileConsumerAndFuseProducers(rewriter, rootOp, rootTileSizes,
-                                   rootInterchange, options.tileDistribution);
+  FailureOr<TileLoopNest> tileLoopNest = tileConsumerAndFuseProducers(
+      rewriter, rootOp, rootTileSizes, rootInterchange,
+      options.tileDistribution, options.returnFusedOpValues);
+
   if (failed(tileLoopNest))
     return rewriter.notifyMatchFailure(
         op, "tileConsumerAndFuseProducers failed unexpectedly");
 
-  // Replace all uses of the tiled loop operation.
-  rootOp->replaceAllUsesWith(tileLoopNest->getRootOpReplacementResults());
+  // Replace uses of the tiled operation(s) which are
+  // - Not within the loop itself (that creates an SSA use-def violation)
+  // - Ignore `tensor.dim` uses. These `tensor.dim` operations might be
+  //   used in computation of the loop bounds themselves. Replacing these uses
+  //   causes use-def violations. These uses should be handled using
+  //   `ReifyRankedShapedTypeOpInterface`.
+  scf::ForOp outerMostLoop = tileLoopNest->getLoopOps().front();
+  auto useOutsideLoopFn = [&outerMostLoop](OpOperand &use) {
+    Operation *user = use.getOwner();
+    return !isa<tensor::DimOp>(user) &&
+           !outerMostLoop->isAncestor(use.getOwner());
+  };
+  for (Value rootResult : rootOp->getResults()) {
+    if (Value replacement =
+            tileLoopNest->getUntiledOpResultReplacement(rootResult))
+      rootResult.replaceUsesWithIf(replacement, useOutsideLoopFn);
+  }
+  if (options.returnFusedOpValues) {
+    for (auto fusedOp : tileLoopNest->getFusedOps()) {
+      for (auto fusedOpResult : fusedOp->getResults()) {
+        if (Value replacement =
+                tileLoopNest->getUntiledOpResultReplacement(fusedOpResult))
+          fusedOpResult.replaceUsesWithIf(replacement, useOutsideLoopFn);
+      }
+    }
+  }
 
   // Apply the filter if specified.
-  for (LinalgOp linalgOp : tileLoopNest->getAllTiledAndFusedOps())
+  for (LinalgOp linalgOp : tileLoopNest->getAllTiledAndFusedOps()) {
     filter.replaceLinalgTransformationFilter(rewriter, linalgOp);
+  }
   return tileLoopNest;
 }
 

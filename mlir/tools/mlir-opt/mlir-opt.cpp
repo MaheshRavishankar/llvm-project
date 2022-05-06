@@ -86,6 +86,7 @@ void registerTestGenericIRVisitorsInterruptPass();
 void registerTestInterfaces();
 void registerTestLinalgCodegenStrategy();
 void registerTestLinalgElementwiseFusion();
+void registerTestLinalgFusionOnTensorsPass();
 void registerTestLinalgFusionTransforms();
 void registerTestLinalgTensorFusionTransforms();
 void registerTestLinalgTiledLoopFusionTransforms();
@@ -182,6 +183,7 @@ void registerTestPasses() {
   mlir::test::registerTestInterfaces();
   mlir::test::registerTestLinalgCodegenStrategy();
   mlir::test::registerTestLinalgElementwiseFusion();
+  mlir::test::registerTestLinalgFusionOnTensorsPass();
   mlir::test::registerTestLinalgFusionTransforms();
   mlir::test::registerTestLinalgTensorFusionTransforms();
   mlir::test::registerTestLinalgTiledLoopFusionTransforms();

@@ -544,14 +544,75 @@ struct LinalgTilingAndFusionOptions {
     tileSizes.assign(ts.begin(), ts.end());
     return *this;
   }
+
   /// Tile interchange used to permute the tile loops.
   SmallVector<int64_t> tileInterchange;
+  LinalgTilingAndFusionOptions &setInterchane(ArrayRef<unsigned> interchange) {
+    tileInterchange.assign(interchange.begin(), interchange.end());
+    return *this;
+  }
+
   /// When specified, specifies distribution of generated tile loops to
   /// processors.
   Optional<LinalgLoopDistributionOptions> tileDistribution = None;
   LinalgTilingAndFusionOptions &
   setDistributionOptions(LinalgLoopDistributionOptions distributionOptions) {
     tileDistribution = std::move(distributionOptions);
+    return *this;
+  }
+
+  /// When specified, this returns from the tiled loops, the tensor values
+  /// that can be used as replacements for the operations that are fused into
+  /// the consumer tiled loops. Note that fusion can lead to the same tile of
+  /// the producer being recomputed for producing different tiles of the
+  /// consumer. In such situations, it is tricky to to contruct the return value
+  /// for the fused ops within the loop. So this option is to be used with care
+  /// only when the caller knows that the fused op is not recomputed. For
+  /// example,
+  ///
+  /// ```mlir
+  ///   %C = linalg.matmul ins(%A, %B : tensor<?x?xf32>, tensor<?x?xf32>)
+  ///       outs (%init1 : tensor<?x?xf32>) -> tensor<?x?xf32>
+  ///   %E = linalg.matmul ins(%C, %D : tensor<?x?xf32>, tensor<?x?xf32>)
+  ///       outs (%init2 : tensor<?x?xf32>) -> tensor<?x?xf32>
+  /// ```
+  ///
+  /// depending the tiling chosen for the consumer `linalg.matmul` can be tiled
+  /// either along two outer loop dimensions (`i` and `j` loops), or just the
+  /// first outer loop dimension (`i`) loop could be tiled. Fusing the producer
+  /// results in either
+  ///
+  /// ```mlir
+  /// %l0 = scf.for %iv0 = ... iter_args(%arg0 = %init2) {
+  ///   %l1 = scf.for %iv1 = ... iter_args(%arg1 = %arg0) {
+  ///     %C = linalg.matmul
+  ///     %E = linalg.matmul ins(%C, ...) ...
+  ///     scf.yield %E
+  ///   }
+  /// }
+  /// ```
+  ///
+  /// or
+  ///
+  /// ```mlir
+  /// %l0 = scf.for %iv0 = ... iter_args(%arg0 = %init2) {
+  ///     %C = linalg.matmul ...
+  ///     %E = linalg.matmul ins(%C, ...) ...
+  ///     scf.yield %E
+  ///   }
+  /// }
+  /// ```
+  ///
+  /// In the first case, the same producer is recomputed along all iterations of
+  /// the inner loop. In the second case, there is no recomputation. In such
+  /// cases the value of the producer computed within the tile loop can be
+  /// returned as well so that it could replace the uses of the untiled producer
+  /// op. Setting the option to `true` assumes that the producer tiles are not
+  /// recomputed after fusion and the caller is expected to ensure this
+  /// assumption holds.
+  bool returnFusedOpValues = false;
+  LinalgTilingAndFusionOptions &setReturnFusedOpValues(bool v) {
+    returnFusedOpValues = v;
     return *this;
   }
 };

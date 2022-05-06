@@ -305,6 +305,9 @@ LogicalResult TileLoopNest::tileRootOp(
   // or pattern.
   if (!isEmpty())
     rootOp->replaceAllUsesWith(tiledRootOp->tensorResults);
+  fusedOps.push_back(rootOp);
+  for (auto result : llvm::enumerate(rootOp->getResults()))
+    replacements[result.value()] = tiledRootOp->tensorResults[result.index()];
 
   // Transfer the stored `rootOp` loop dimensions if it has been tiled before.
   if (tiledRootAndFusedOpsLoops.count(rootOp) != 0) {
@@ -325,8 +328,99 @@ LogicalResult TileLoopNest::tileRootOp(
   return success();
 }
 
+void TileLoopNest::yieldFusedValues(OpBuilder &b, LinalgOp untiledOp,
+                                    LinalgOp tiledOp,
+                                    ArrayRef<OpFoldResult> offsets,
+                                    ArrayRef<OpFoldResult> sizes,
+                                    ArrayRef<OpFoldResult> strides) {
+  if (tileLoopOps.empty())
+    return;
+
+  SmallVector<Value> newIterOperands;
+  SmallVector<Value> yieldedResults;
+  SmallVector<Value> returnedFusedOpResults;
+  for (auto result : llvm::enumerate(untiledOp->getResults())) {
+    // Check if any of the uses are outside the tile loop nest. Dim
+    // uses are not treated as "real" uses, further the dim ops could be used
+    // to compute the bounds of the loop itself. They are expected to be
+    // resolved using `ReifyRankedShapedTypeOpInterface`.
+    if (llvm::all_of(result.value().getUsers(), [&](Operation *user) {
+          return tileLoopOps.front()->isAncestor(user) ||
+                 isa<tensor::DimOp>(user) || llvm::is_contained(fusedOps, user);
+          ;
+        }))
+      continue;
+
+    unsigned resultNumber = result.value().getResultNumber();
+    // 1. Replace all existing uses of untiled op in the iter_args of the tile
+    //    loops with the `outs` of the untiled operation.
+    OpOperand *untiledOpOutOperand = untiledOp.getOutputOperand(resultNumber);
+    tileLoopOps.front()->replaceUsesOfWith(result.value(),
+                                           untiledOpOutOperand->get());
+
+    // 2. The `outs` ops of the untiled op are the "new" iter operands to be
+    //    added.
+    newIterOperands.push_back(untiledOpOutOperand->get());
+    yieldedResults.push_back(tiledOp->getResult(resultNumber));
+    returnedFusedOpResults.push_back(result.value());
+  }
+
+  // The inner most loop body needs to be modified to add `tensor.insert_slice`s
+  // to reconstruct the full tensor using the values produced from the tiled
+  // ops.
+  scf::ForOp outerMostLoop = tileLoopOps.front();
+  scf::ForOp innerMostLoop = tileLoopOps.back();
+  NewYieldValueFn innerFn = [&](OpBuilder &innerBuilder, Location innerLoc,
+                                ArrayRef<BlockArgument> innerNewBBArgs) {
+    SmallVector<Value> newYieldVals;
+    for (auto yieldedResult : llvm::enumerate(yieldedResults)) {
+      newYieldVals.push_back(innerBuilder.create<tensor::InsertSliceOp>(
+          tiledOp->getLoc(), yieldedResult.value(),
+          innerNewBBArgs[yieldedResult.index()], offsets, sizes, strides));
+    }
+    return newYieldVals;
+  };
+  scf::ForOp newInnerMostLoop =
+      replaceLoopWithNewYields(b, innerMostLoop, newIterOperands, innerFn);
+  tileLoopOps.back() = newInnerMostLoop;
+
+  // Propagate the newly yielded values back up the loop nest.
+  for (unsigned loopDepth :
+       llvm::reverse(llvm::seq<unsigned>(0, tileLoopOps.size() - 1))) {
+    NewYieldValueFn fn = [&](OpBuilder &innerBuilder, Location innerLoc,
+                             ArrayRef<BlockArgument> innerNewBBArgs) {
+      return llvm::to_vector(
+          llvm::map_range(tileLoopOps[loopDepth + 1].getResults().take_back(
+                              newIterOperands.size()),
+                          [](OpResult r) -> Value { return r; }));
+    };
+    tileLoopOps[loopDepth] = replaceLoopWithNewYields(b, tileLoopOps[loopDepth],
+                                                      newIterOperands, fn);
+  }
+
+  // The `replacements` uses values returned by the tile loop nest. Update these
+  // to use values from the new loop nests created here. Build a map from result
+  // of the previous outermost loop to the new outermost loop.
+  llvm::SmallDenseMap<Value, Value> resultValRemap;
+  scf::ForOp newOuterMostLoop = tileLoopOps.front();
+  for (auto origResult : llvm::enumerate(outerMostLoop->getResults())) {
+    resultValRemap[origResult.value()] =
+        newOuterMostLoop->getResult(origResult.index());
+  }
+  for (auto &replacement : replacements) {
+    auto newReplacement = resultValRemap.lookup(replacement.second);
+    if (newReplacement)
+      replacement.second = newReplacement;
+  }
+  for (auto fusedOpResult : llvm::enumerate(returnedFusedOpResults)) {
+    replacements[fusedOpResult.value()] = newOuterMostLoop.getResult(
+        outerMostLoop.getNumResults() + fusedOpResult.index());
+  }
+}
+
 FailureOr<LinalgOp> TileLoopNest::fuseProducer(OpBuilder &b,
-                                               OpOperand *consumerOpOperand) {
+                                               OpOperand *consumerOpOperand,
+                                               bool returnFusedOpValues) {
   // Check if the consumer has been tiled before. For example, it may not have
   // been tiled if the outermost tile loop is a reduction loop.
   if (tiledRootAndFusedOpsLoops.count(consumerOpOperand->getOwner()) == 0)
@@ -361,13 +455,18 @@ FailureOr<LinalgOp> TileLoopNest::fuseProducer(OpBuilder &b,
   OpOperand *iterArg = nullptr;
   auto producerResult = sliceOp.source().dyn_cast<OpResult>();
   if (auto bbArg = sliceOp.source().dyn_cast<BlockArgument>()) {
+    if (bbArg.getParentBlock() != sliceOp->getBlock())
+      return failure();
     iterArg = getTiedIterArg(bbArg);
     // Check the iteration argument may be used to pass in the producer output.
     if (!iterArg || hasOtherUses(bbArg, sliceOp))
       return failure();
     producerResult = iterArg->get().dyn_cast<OpResult>();
   }
-  if (!producerResult || !isa<LinalgOp>(producerResult.getOwner()))
+  if (!producerResult)
+    return failure();
+  LinalgOp producer = dyn_cast<LinalgOp>(producerResult.getOwner());
+  if (!producer)
     return failure();
 
   // Compute the tiled producer slice dimensions given the tiled consumer loops.
@@ -385,25 +484,30 @@ FailureOr<LinalgOp> TileLoopNest::fuseProducer(OpBuilder &b,
       getTiledProducer(b, producerResult, sliceOp, tiledSliceDimIndices,
                        tiledProducerLoopIndices, iterArg);
   tiledRootAndFusedOpsLoops[clonedOp] = tiledProducerLoopIndices;
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPointAfter(clonedOp);
 
   // Cast the `clonedOp` result to gap type mismatches before canonicalization.
   Type consumerOperandType = consumerOpOperand->get().getType();
   Value newResult = clonedOp->getResult(producerResult.getResultNumber());
   if (newResult.getType() != consumerOperandType) {
-    OpBuilder::InsertionGuard guard(b);
-    b.setInsertionPointAfter(clonedOp);
     newResult = b.create<tensor::CastOp>(producerResult.getLoc(),
                                          consumerOperandType, newResult);
   }
 
   // Replace the `sliceOp` uses except for the `clonedOp` output uses.
   sliceOp.getResult().replaceAllUsesExcept(newResult, clonedOp);
+
+  if (returnFusedOpValues) {
+    fusedOps.push_back(producer);
+    yieldFusedValues(b, producer, clonedOp, sliceOp.getMixedOffsets(),
+                     sliceOp.getMixedSizes(), sliceOp.getMixedStrides());
+  }
   return clonedOp;
 }
 
-ValueRange TileLoopNest::getRootOpReplacementResults() {
-  assert(!isEmpty() && "expect tile loop nest to be non-empty");
-  return tileLoopOps.front()->getOpResults();
+Value TileLoopNest::getUntiledOpResultReplacement(Value v) {
+  return replacements.lookup(v);
 }
 
 SmallVector<LinalgOp> TileLoopNest::getAllTiledAndFusedOps() {
@@ -424,7 +528,8 @@ SmallVector<LinalgOp> TileLoopNest::getAllTiledAndFusedOps() {
 FailureOr<TileLoopNest> mlir::linalg::tileConsumerAndFuseProducers(
     OpBuilder &b, LinalgOp consumerOp, ArrayRef<int64_t> tileSizes,
     ArrayRef<int64_t> tileInterchange,
-    const Optional<LinalgLoopDistributionOptions> &tileDistribution) {
+    const Optional<LinalgLoopDistributionOptions> &tileDistribution,
+    bool returnFusedOpValues) {
   assert(tileSizes.size() == tileInterchange.size() &&
          "expect the number of tile sizes and interchange dims to match");
   assert(isPermutation(tileInterchange) &&
@@ -444,11 +549,12 @@ FailureOr<TileLoopNest> mlir::linalg::tileConsumerAndFuseProducers(
   int64_t split = std::distance(iterTypes.begin(), it);
 
   // Helper to fuse the producers greedily using a queue of fusion candidates.
-  auto fuseProducersGreedily = [&](ArrayRef<OpOperand *> operands) {
+  auto fuseProducersGreedily = [&](ArrayRef<OpOperand *> operands,
+                                   bool returnFusedOpValues) {
     SmallVector<OpOperand *> candidates(operands.begin(), operands.end());
     while (!candidates.empty()) {
-      FailureOr<LinalgOp> fusedProducer =
-          tileLoopNest.fuseProducer(b, candidates.pop_back_val());
+      FailureOr<LinalgOp> fusedProducer = tileLoopNest.fuseProducer(
+          b, candidates.pop_back_val(), returnFusedOpValues);
       if (failed(fusedProducer))
         continue;
       candidates.append(fusedProducer->getInputAndOutputOperands());
@@ -462,7 +568,12 @@ FailureOr<TileLoopNest> mlir::linalg::tileConsumerAndFuseProducers(
   if (failed(tileLoopNest.tileRootOp(b, outerTileSizes, tileInterchange,
                                      tileDistribution)))
     return failure();
-  fuseProducersGreedily(tileLoopNest.getRootOp().getOutputOperands());
+  if (returnFusedOpValues) {
+    fuseProducersGreedily(tileLoopNest.getRootOp().getInputAndOutputOperands(),
+                          true);
+  } else {
+    fuseProducersGreedily(tileLoopNest.getRootOp().getOutputOperands(), false);
+  }
 
   // Tile the remaining loops and fuse the input operands.
   SmallVector<int64_t> innerTileSizes;
@@ -471,7 +582,7 @@ FailureOr<TileLoopNest> mlir::linalg::tileConsumerAndFuseProducers(
   if (failed(tileLoopNest.tileRootOp(b, innerTileSizes, tileInterchange,
                                      tileDistribution)))
     return failure();
-  fuseProducersGreedily(tileLoopNest.getRootOp().getInputOperands());
+  fuseProducersGreedily(tileLoopNest.getRootOp().getInputOperands(), false);
 
   // Exit if the tile loop nest is empty since all tile sizes are zero.
   if (tileLoopNest.isEmpty())

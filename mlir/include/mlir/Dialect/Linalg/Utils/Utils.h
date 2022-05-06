@@ -343,16 +343,29 @@ public:
 
   /// Fuse the producer of `consumerOpOperand` into the tile loop nest. Returns
   /// the fused producer or fails if fusion is not possible.
-  FailureOr<LinalgOp> fuseProducer(OpBuilder &b, OpOperand *consumerOpOperand);
+  FailureOr<LinalgOp> fuseProducer(OpBuilder &b, OpOperand *consumerOpOperand,
+                                   bool replaceFusedOpExternalUses);
 
-  /// Returns the replacement results for the original untiled root operation.
-  ValueRange getRootOpReplacementResults();
+  /// For the `untiledOp` that is fused with the root op, `clonedOp` being the
+  /// fused operation, modify the tiled loop nest to yield a value that can
+  /// be used to replace `untiledOp`.
+  void yieldFusedValues(OpBuilder &b, LinalgOp untiledOp, LinalgOp clonedOp,
+                        ArrayRef<OpFoldResult> mixedOffsets,
+                        ArrayRef<OpFoldResult> mixedSizes,
+                        ArrayRef<OpFoldResult> mixedStrides);
+
+  /// Returns the replacement results for the original untiled operation.
+  Value getUntiledOpResultReplacement(Value v);
 
   /// Returns the tiled root operation.
   LinalgOp getRootOp() { return rootOp; }
 
   /// Returns the tiled root operation and the fused producers.
   SmallVector<LinalgOp> getAllTiledAndFusedOps();
+
+  /// Returns the ops that were tiled and fused into the loop (returns the
+  /// original ops)
+  ArrayRef<Operation *> getFusedOps() { return fusedOps; }
 
   /// Returns the loop ops generated from tiling.
   ArrayRef<scf::ForOp> getLoopOps() { return tileLoopOps; }
@@ -386,6 +399,9 @@ private:
   LinalgOp rootOp;
   SmallVector<scf::ForOp> tileLoopOps;
   DenseMap<Operation *, SmallVector<int64_t>> tiledRootAndFusedOpsLoops;
+
+  SmallVector<Operation *> fusedOps;
+  DenseMap<Value, Value> replacements;
 };
 
 /// Tiles `consumerOp` and fuses its dependencies if possible. Uses the
@@ -394,7 +410,8 @@ private:
 FailureOr<TileLoopNest> tileConsumerAndFuseProducers(
     OpBuilder &b, LinalgOp consumerOp, ArrayRef<int64_t> tileSizes,
     ArrayRef<int64_t> tileInterchange,
-    const Optional<LinalgLoopDistributionOptions> &tileDistribution);
+    const Optional<LinalgLoopDistributionOptions> &tileDistribution,
+    bool returnFusedOpValues = false);
 
 //===----------------------------------------------------------------------===//
 // Generic op region utilities
