@@ -184,6 +184,9 @@ void TestTilingInterfacePass::addTestPatterns(MLIRContext *context,
     addPatternForTiling<
         TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter>(
         context, {10}, "gemm_fusion", patterns);
+    addPatternForTiling<
+        TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter>(
+        context, {10, 20, 30, 40}, "conv_pool_fuse", patterns);
     return;
   }
 }
