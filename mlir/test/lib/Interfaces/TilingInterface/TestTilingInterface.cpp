@@ -71,25 +71,26 @@ private:
 /// (that tiles and fuses operations using the `TilingInterface` with `scf.for`
 /// ops for iterating over the tiles) while using a `filter` to avoid recursive
 /// application.
-struct TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter
-    : public scf::TileConsumerAndFuseProducersUsingSCFForOp {
-  TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter(
-      MLIRContext *context, scf::SCFTilingOptions options,
+struct TestTileConsumerAndFuseProducersGreedilyUsingSCFForOpWithFilter
+    : public scf::TileConsumerAndFuseProducersGreedilyUsingSCFForOp {
+  TestTileConsumerAndFuseProducersGreedilyUsingSCFForOpWithFilter(
+      MLIRContext *context, scf::SCFTileAndFuseOptions options,
       linalg::LinalgTransformationFilter filter =
           linalg::LinalgTransformationFilter(),
       PatternBenefit benefit = 1)
-      : scf::TileConsumerAndFuseProducersUsingSCFForOp(context, options,
-                                                       benefit),
+      : scf::TileConsumerAndFuseProducersGreedilyUsingSCFForOp(context, options,
+                                                               benefit),
         filter(filter) {}
 
   /// Construct a generic pattern applied to `opName`.
-  TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter(
-      StringRef opName, MLIRContext *context, scf::SCFTilingOptions options,
+  TestTileConsumerAndFuseProducersGreedilyUsingSCFForOpWithFilter(
+      StringRef opName, MLIRContext *context,
+      scf::SCFTileAndFuseOptions options,
       linalg::LinalgTransformationFilter filter =
           linalg::LinalgTransformationFilter(),
       PatternBenefit benefit = 1)
-      : scf::TileConsumerAndFuseProducersUsingSCFForOp(context, options,
-                                                       benefit),
+      : scf::TileConsumerAndFuseProducersGreedilyUsingSCFForOp(context, options,
+                                                               benefit),
         filter(filter) {}
 
   LogicalResult matchAndRewrite(TilingInterface op,
@@ -141,6 +142,13 @@ struct TestTilingInterfacePass
                      "with scf.for operations"),
       llvm::cl::init(false)};
 
+  Option<bool> testTileConsumerAndFuseProducerWithoutRedundancy{
+      *this, "tile-consumer-and-fuse-yield-producer-using-scf-for",
+      llvm::cl::desc(
+          "Test tile and fuse transformation using TilingInterface with "
+          "scf.for operations, when producers can be fused without redundancy"),
+      llvm::cl::init(false)};
+
   Option<bool> testLoweringToScalar{
       *this, "lower-to-scalar-using-scf-for",
       llvm::cl::desc("Test lowering to scalar implementation using "
@@ -154,69 +162,95 @@ private:
 };
 } // namespace
 
-template <class Pattern>
-static void
-addPatternForTiling(MLIRContext *context, RewritePatternSet &patterns,
-                    StringRef filterName, ArrayRef<int64_t> tileSizes,
-                    ArrayRef<unsigned> interchange = {}) {
+static void addPatternForTiling(MLIRContext *context,
+                                RewritePatternSet &patterns,
+                                StringRef filterName,
+                                ArrayRef<int64_t> tileSizes,
+                                ArrayRef<unsigned> interchange = {}) {
   scf::SCFTilingOptions tilingOptions;
   tilingOptions.setTileSizes(tileSizes).setInterchange(interchange);
   linalg::LinalgTransformationFilter filter(
       StringAttr::get(context, filterName), StringAttr::get(context, "tiled"));
-  patterns.add<Pattern>(context, tilingOptions, filter);
+  patterns.add<TestTileUsingSCFForOpWithFilter>(context, tilingOptions, filter);
+}
+
+static void
+addPatternForTileAndFuse(MLIRContext *context, RewritePatternSet &patterns,
+                         StringRef filterName, ArrayRef<int64_t> tileSizes,
+                         bool producerCanBeFusedWithoutRedundancy = false,
+                         ArrayRef<unsigned> interchange = {}) {
+  scf::SCFTileAndFuseOptions tileAndFuseOptions;
+  tileAndFuseOptions.tilingOptions.setTileSizes(tileSizes).setInterchange(
+      interchange);
+  tileAndFuseOptions.setProducerCanBeFusedWithoutRedundantComputations(
+      producerCanBeFusedWithoutRedundancy);
+  linalg::LinalgTransformationFilter filter(
+      StringAttr::get(context, filterName), StringAttr::get(context, "tiled"));
+  patterns.add<TestTileConsumerAndFuseProducersGreedilyUsingSCFForOpWithFilter>(
+      context, tileAndFuseOptions, filter);
 }
 
 void TestTilingInterfacePass::addTestPatterns(MLIRContext *context,
                                               RewritePatternSet &patterns) {
   if (testTiling) {
     // 1. Tiling M and N dims of `linalg.matmul` on tensors.
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "simple_gemm", {10, 20});
+    addPatternForTiling(context, patterns, "simple_gemm", {10, 20});
     // 2. Tiling M, N and K of `linalg.matmul` on buffers.
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "simple_gemm_memref", {10, 20, 30});
+    addPatternForTiling(context, patterns, "simple_gemm_memref", {10, 20, 30});
     // 3. Tiling 3D parallel generic op which implements a transpose
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "parallel_generic_transpose", {10, 0, 20});
+    addPatternForTiling(context, patterns, "parallel_generic_transpose",
+                        {10, 0, 20});
     // 4. Tiling 2D conv op.
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "simple_conv", {0, 0, 0, 0, 10, 20, 30});
+    addPatternForTiling(context, patterns, "simple_conv",
+                        {0, 0, 0, 0, 10, 20, 30});
     // 5. Tiling a simple op with `linalg.index` inside.
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "indexed_semantics", {10, 20});
+    addPatternForTiling(context, patterns, "indexed_semantics", {10, 20});
     // 6. Tiling + interchange of an operation
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "gemm_interchange", {10, 20, 30}, {1, 2, 0});
+    addPatternForTiling(context, patterns, "gemm_interchange", {10, 20, 30},
+                        {1, 2, 0});
     // 7. Tiling for 2D pad tensor operations.
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "pad_2dtiling", {2, 3});
+    addPatternForTiling(context, patterns, "pad_2dtiling", {2, 3});
     // 8. Tiling inner dimension of 2d pad tensor operations.
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "pad_inner_tiling", {0, 3});
+    addPatternForTiling(context, patterns, "pad_inner_tiling", {0, 3});
     // 9. Tiling inner dimension of 2d pad tensor operations.
-    addPatternForTiling<TestTileUsingSCFForOpWithFilter>(
-        context, patterns, "pad_outer_tiling", {2, 3});
+    addPatternForTiling(context, patterns, "pad_outer_tiling", {2, 3});
 
     return;
   }
   if (testTileConsumerAndFuseProducer) {
-    // 1. Tile and fuse of gemm with bias-add operation.
-    addPatternForTiling<
-        TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter>(
-        context, patterns, "fusion", {10, 20});
-    addPatternForTiling<
-        TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter>(
-        context, patterns, "gemm_fusion", {10});
-    addPatternForTiling<
-        TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter>(
-        context, patterns, "gemm_interchange_fusion", {10, 20}, {1, 0});
-    addPatternForTiling<
-        TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter>(
-        context, patterns, "gemm_plus_gemm_fusion", {10, 20});
-    addPatternForTiling<
-        TestTileConsumerAndFuseProducersUsingSCFForOpWithFilter>(
-        context, patterns, "gemm_sequence_fusion", {10});
+    // 1. Tile and fuse of gemm with fill producer and bias-add consumer.
+    addPatternForTileAndFuse(context, patterns, "fusion", {10, 20});
+    // 2. Tile and fuse sequence of GEMMs, by fusing only along M.
+    addPatternForTileAndFuse(context, patterns, "gemm_fusion", {10});
+    // 3. Tile and fuse gemm with consumer + interchange of tiled loops.
+    addPatternForTileAndFuse(context, patterns, "gemm_interchange_fusion",
+                             {10, 20}, false, {1, 0});
+    // 4. Tile and fuse matmul + transpose(matmul). Will introduce redundant
+    // computations.
+    addPatternForTileAndFuse(context, patterns, "gemm_plus_gemm_fusion",
+                             {10, 20});
+    // 5. Tile and fuse a sequence of GEMMs by tiling and fusing only along M
+    // dimension.
+    addPatternForTileAndFuse(context, patterns, "gemm_sequence_fusion", {10});
     return;
+  }
+  if (testTileConsumerAndFuseProducerWithoutRedundancy) {
+    // 1. Tile and fuse of gemm with fill producer and bias-add consumer,
+    // returning both the gemm value and the bias-add value.
+    addPatternForTileAndFuse(context, patterns, "fusion", {10, 20}, true);
+    // 2. Tile and fuse sequence of GEMMs, by fusing only along M, return all
+    // the individual GEMM values.
+    addPatternForTileAndFuse(context, patterns, "gemm_fusion", {10}, true);
+    // 3. Tile and fuse gemm with consumer + interchange of tiled loops.
+    addPatternForTileAndFuse(context, patterns, "gemm_interchange_fusion",
+                             {10, 20}, true, {1, 0});
+    // 4.  Tile and fuse a sequence of GEMMs by tiling and fusing only along M
+    // dimension.
+    addPatternForTileAndFuse(context, patterns, "gemm_sequence_fusion", {10},
+                             true);
+    // 5. Fusion of back-to-back-reduction ops
+    addPatternForTileAndFuse(context, patterns, "reduction_sequence_fusion",
+                             {10}, true);
   }
   if (testLoweringToScalar) {
     patterns.add<scf::LowerToLoopsUsingSCFForOp>(context);

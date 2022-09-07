@@ -44,8 +44,6 @@ class FuncOp;
 /// - `loop` isnt erased, but is left in a "no-op" state where the body of the
 ///   loop just yields the basic block arguments that correspond to the
 ///   initialization values of a loop. The loop is dead after this method.
-/// - All uses of the `newIterOperands` within the generated new loop
-///   are replaced with the corresponding `BlockArgument` in the loop body.
 using NewYieldValueFn = std::function<SmallVector<Value>(
     OpBuilder &b, Location loc, ArrayRef<BlockArgument> newBBArgs)>;
 scf::ForOp replaceLoopWithNewYields(OpBuilder &builder, scf::ForOp loop,
@@ -64,8 +62,6 @@ scf::ForOp replaceLoopWithNewYields(OpBuilder &builder, scf::ForOp loop,
 ///   the body of the loop just yields the basic block arguments that correspond
 ///   to the initialization values of a loop. The original loops are dead after
 ///   this method.
-/// - All uses of the `newIterOperands` within the generated new loop
-///   are replaced with the corresponding `BlockArgument` in the loop body.
 SmallVector<scf::ForOp>
 replaceLoopNestWithNewYields(OpBuilder &builder, ArrayRef<scf::ForOp> loopNest,
                              ValueRange newIterOperands,

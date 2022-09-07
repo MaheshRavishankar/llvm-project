@@ -79,15 +79,6 @@ mlir::replaceLoopWithNewYields(OpBuilder &builder, scf::ForOp loop,
        llvm::zip(bbArgs, newLoopBody->getArguments().take_front(bbArgs.size())))
     std::get<0>(it).replaceAllUsesWith(std::get<1>(it));
 
-  // Replace all uses of `newIterOperands` with the corresponding basic block
-  // arguments.
-  for (auto it : llvm::zip(newIterOperands, newBBArgs)) {
-    std::get<0>(it).replaceUsesWithIf(std::get<1>(it), [&](OpOperand &use) {
-      Operation *user = use.getOwner();
-      return newLoop->isProperAncestor(user);
-    });
-  }
-
   // Replace all uses of the original loop with corresponding values from the
   // new loop.
   loop.replaceAllUsesWith(
@@ -123,6 +114,8 @@ SmallVector<scf::ForOp> mlir::replaceLoopNestWithNewYields(
     };
     newLoopNest[loopDepth] = replaceLoopWithNewYields(
         builder, loopNest[loopDepth], newIterOperands, fn);
+    newLoopNest[loopDepth + 1].getInitArgsMutable().assign(
+        newLoopNest[loopDepth].getRegionIterArgs());
   }
   return newLoopNest;
 }
