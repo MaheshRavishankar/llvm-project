@@ -87,6 +87,20 @@ struct SCFTileAndFuseOptions {
     tilingOptions = options;
     return *this;
   }
+
+  /// Callback to check if a value is to be yielded.
+  /// Parameters are `producer` which is the result of the untiled op
+  /// that is being fused, and the `sliceOp` that represents the slice
+  /// being fused (through tile and fuse).
+  using ControlYieldFusedProducerResultFn =
+      std::function<bool(OpResult producer, Operation *sliceOp)>;
+  ControlYieldFusedProducerResultFn shouldYieldFusedProducerResult =
+      [](OpResult, Operation *) { return false; };
+  SCFTileAndFuseOptions &setControlYieldFusedProducerResultFn(
+      const ControlYieldFusedProducerResultFn &fn) {
+    shouldYieldFusedProducerResult = fn;
+    return *this;
+  }
 };
 
 /// Transformation information returned after tile and fuse.

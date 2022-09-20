@@ -200,7 +200,7 @@ generateTileLoopNest(OpBuilder &builder, Location loc,
 /// }
 /// ```
 /// TODO: This API can be cleaned up by using `SubsetExtractOpInterface`.
-static FailureOr<SmallVector<Value>>
+static SmallVector<Value>
 yieldTiledValues(RewriterBase &rewriter, ValueRange initValues,
                  ValueRange yieldedValues,
                  ArrayRef<SmallVector<OpFoldResult>> tileOffsetsList,
@@ -391,11 +391,9 @@ mlir::scf::tileUsingSCFForOp(RewriterBase &rewriter, TilingInterface op,
     }
   }
 
-  FailureOr<SmallVector<Value>> replacementOr = yieldTiledValues(
+  tilingResult.replacements = yieldTiledValues(
       rewriter, destinationTensors, tilingResult.tiledOps.back()->getResults(),
       resultOffsetsList, resultSizesList, tilingResult.loops);
-  if (failed(replacementOr))
-    return rewriter.notifyMatchFailure(op, "failed to yield replacement");
 
   if (auto dstOp =
           dyn_cast<DestinationStyleOpInterface>(tilingResult.tiledOps.back())) {
@@ -407,8 +405,6 @@ mlir::scf::tileUsingSCFForOp(RewriterBase &rewriter, TilingInterface op,
     updateDestinationOperandsForTiledOp(rewriter, destinationTensors,
                                         innerMostLoop.getRegionIterArgs());
   }
-
-  tilingResult.replacements = replacementOr.value();
 
   LLVM_DEBUG({
     if (!tilingResult.loops.empty()) {
@@ -476,11 +472,9 @@ mlir::scf::tileReductionUsingScf(PatternRewriter &b,
     resultSizesList.push_back(
         b.createOrFold<tensor::DimOp>(loc, parallelOp->getResult(0), i));
   SmallVector<OpFoldResult> outOffsets(offsets.size(), b.getIndexAttr(0));
-  FailureOr<SmallVector<Value>> replacementOr = yieldTiledValues(
+  SmallVector<Value> replacements = yieldTiledValues(
       b, identityTensor.value()->getResults(), parallelOp->getResults(),
       outOffsets, resultSizesList, loops);
-  if (failed(replacementOr))
-    return b.notifyMatchFailure(op, "failed to yield replacement");
 
   auto dstOp = cast<DestinationStyleOpInterface>(parallelOp);
   auto innerMostLoop = loops.back();
@@ -493,8 +487,7 @@ mlir::scf::tileReductionUsingScf(PatternRewriter &b,
 
   // 4. Apply the merge reduction to combine all the partial values.
   b.setInsertionPointAfter(*loops.begin());
-  Operation *mergeOp =
-      op.mergeReductions(b, loc, replacementOr.value(), reductionDim);
+  Operation *mergeOp = op.mergeReductions(b, loc, replacements, reductionDim);
   b.replaceOp(op, mergeOp->getResults());
 
   SCFReductionTilingResult results;
@@ -544,7 +537,7 @@ mlir::scf::tileConsumerAndFuseProducerGreedilyUsingSCFForOp(
 
   // 1. First tile the consumer.
   scf::SCFTileAndFuseResult tileAndFuseResult;
-  llvm::SmallDenseMap<Value, int64_t> yieldedValueToResultNumber;
+  SmallVector<Value> toBeReturned;
   {
     FailureOr<scf::SCFTilingResult> tilingResult =
         tileUsingSCFForOp(rewriter, consumer, options.tilingOptions);
@@ -553,13 +546,8 @@ mlir::scf::tileConsumerAndFuseProducerGreedilyUsingSCFForOp(
     for (auto *tiledOp : tilingResult->tiledOps)
       tileAndFuseResult.tiledAndFusedOps.insert(tiledOp);
     tileAndFuseResult.loops = std::move(tilingResult->loops);
-    for (const auto &result : llvm::enumerate(
-             llvm::zip(consumer->getResults(), tilingResult->replacements))) {
-      tileAndFuseResult.replacements[std::get<0>(result.value())] =
-          std::get<1>(result.value());
-      yieldedValueToResultNumber[tilingResult->tiledOps.back()->getResult(
-          result.index())] = result.index();
-    }
+    toBeReturned = llvm::to_vector(llvm::map_range(
+        consumer->getResults(), [](OpResult r) -> Value { return r; }));
   }
 
   // If there are no loops generated, fusion is immaterial.
@@ -605,14 +593,7 @@ mlir::scf::tileConsumerAndFuseProducerGreedilyUsingSCFForOp(
       continue;
     rewriter.replaceOp(candidateSliceOp, fusedProducerValue.value());
 
-    // 2d. The operands of the fused producer might themselved be slices of
-    //     values produced by operations that implement the `TilingInterface`.
-    //     Add these operations to the worklist.
-    Operation *fusedProducer = fusedProducerValue->getDefiningOp();
-    tileAndFuseResult.tiledAndFusedOps.insert(fusedProducer);
-    addCandidateSlices(fusedProducer, candidates);
-
-    // 2e. If the slice is for a destination operand, for example,
+    // 2d. If the slice is for a destination operand, for example,
     //
     // ```mlir
     // %0 = linalg.init
@@ -683,7 +664,58 @@ mlir::scf::tileConsumerAndFuseProducerGreedilyUsingSCFForOp(
             innerMostLoop.getRegionIterArgs()[iterArgNumber.value()]);
       }
     }
+
+    // 2e. Use the callback to yield the value of the fused producer as well.
+    if (options.shouldYieldFusedProducerResult(fusableProducer,
+                                               candidateSliceOp)) {
+      SmallVector<Value> initValues;
+      FailureOr<Value> initValue = tensor::getOrCreateDestination(
+          rewriter, fusableProducer.getOwner()->getLoc(), fusableProducer);
+      if (succeeded(initValue)) {
+        SmallVector<OpFoldResult> resultOffsets =
+            candidateSliceOp.getMixedOffsets();
+        SmallVector<OpFoldResult> resultSizes =
+            candidateSliceOp.getMixedSizes();
+        SmallVector<Value> yieldedVals = yieldTiledValues(
+            rewriter, initValue.value(), fusedProducerValue.value(),
+            resultOffsets, resultSizes, tileAndFuseResult.loops);
+        toBeReturned.push_back(fusableProducer);
+      }
+      if (auto dstStyleProducer =
+              fusedProducerValue.value()
+                  .getDefiningOp<DestinationStyleOpInterface>()) {
+        Value dstValue =
+            dstStyleProducer
+                .getDpsInitOperand(fusableProducer.getResultNumber())
+                ->get();
+        updateDestinationOperandsForTiledOp(
+            rewriter, dstValue,
+            tileAndFuseResult.loops.back().getRegionIterArgs().back());
+      }
+    }
+
+    // 2f. The operands of the fused producer might themselved be slices of
+    //     values produced by operations that implement the `TilingInterface`.
+    //     Add these operations to the worklist.
+    if (auto tiledAndFusedOp = fusedProducerValue.value().getDefiningOp()) {
+      tileAndFuseResult.tiledAndFusedOps.insert(tiledAndFusedOp);
+      addCandidateSlices(tiledAndFusedOp, candidates);
+    }
+
+    LLVM_DEBUG({
+      if (!tileAndFuseResult.loops.empty()) {
+        llvm::errs() << "After fusing producer: \n";
+        tileAndFuseResult.loops.front().dump();
+        llvm::errs() << "\n";
+      }
+    });
   }
+
+  for (auto returnedValue : llvm::enumerate(toBeReturned)) {
+    tileAndFuseResult.replacements[returnedValue.value()] =
+        tileAndFuseResult.loops.front().getResult(returnedValue.index());
+  }
+
   return tileAndFuseResult;
 }
 
