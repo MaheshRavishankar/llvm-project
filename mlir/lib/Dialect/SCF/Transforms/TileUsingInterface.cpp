@@ -245,6 +245,30 @@ updateDestinationOperandsForTiledOp(OpBuilder &builder,
   }
 }
 
+/// Helper method to yield the values of the tiled op, as well as
+/// update the destination operands of the tiled op, if it is
+/// a destination passing style op.
+static FailureOr<SmallVector<Value>>
+yieldTiledValues(RewriterBase &rewriter, ArrayRef<Value> initValues,
+                 Operation *tiledOp,
+                 ArrayRef<SmallVector<OpFoldResult>> tileOffsetsList,
+                 ArrayRef<SmallVector<OpFoldResult>> tileSizesList,
+                 MutableArrayRef<scf::ForOp> loops) {
+  FailureOr<SmallVector<Value>> replacement =
+      yieldTiledValues(rewriter, initValues, tiledOp->getResults(),
+                       tileOffsetsList, tileSizesList, loops);
+  if (failed(replacement))
+    return rewriter.notifyMatchFailure(tiledOp, "failed to yield replacement");
+
+  if (auto dstOp = dyn_cast<DestinationStyleOpInterface>(tiledOp)) {
+    auto innerMostLoop = loops.back();
+    SmallVector<Value> tiledOpDestinationTensors = dstOp.getDpsInitOperands();
+    updateDestinationOperandsForTiledOp(rewriter, tiledOpDestinationTensors,
+                                        innerMostLoop.getRegionIterArgs());
+  }
+  return replacement.value();
+}
+
 /// Implementation of tiling transformation of `op` that implements the
 /// `TilingInterface` using `scf.for` to iterate over the tiles.
 FailureOr<scf::SCFTilingResult>
@@ -257,12 +281,6 @@ mlir::scf::tileUsingSCFForOp(RewriterBase &rewriter, TilingInterface op,
     return rewriter.notifyMatchFailure(
         op, "missing tile size computation function");
   }
-
-  // Get destination tensors.
-  SmallVector<Value> destinationTensors;
-  if (failed(tensor::getOrCreateDestinations(rewriter, op.getLoc(), op,
-                                             destinationTensors)))
-    return rewriter.notifyMatchFailure(op, "failed to get destinations");
 
   // 1. Get the range of the loops that are represented by the operation.
   SmallVector<Range> iterationDomain = op.getIterationDomain(rewriter);
@@ -362,22 +380,16 @@ mlir::scf::tileUsingSCFForOp(RewriterBase &rewriter, TilingInterface op,
     }
   }
 
+  SmallVector<Value> destinationTensors;
+  if (failed(tensor::getOrCreateDestinations(rewriter, op.getLoc(), op,
+                                             destinationTensors)))
+    return rewriter.notifyMatchFailure(op, "failed to get destinations");
+
   FailureOr<SmallVector<Value>> replacementOr = yieldTiledValues(
-      rewriter, destinationTensors, tilingResult.tiledOps.back()->getResults(),
+      rewriter, destinationTensors, tilingResult.tiledOps.back(),
       resultOffsetsList, resultSizesList, tilingResult.loops);
   if (failed(replacementOr))
-    return rewriter.notifyMatchFailure(op, "failed to yield replacement");
-
-  if (auto dstOp =
-          dyn_cast<DestinationStyleOpInterface>(tilingResult.tiledOps.back())) {
-    auto innerMostLoop = tilingResult.loops.back();
-    SmallVector<Value> destinationTensors = dstOp.getDpsInitOperands();
-    assert(destinationTensors.size() ==
-               innerMostLoop.getRegionIterArgs().size() &&
-           "unexpected number of outputs");
-    updateDestinationOperandsForTiledOp(rewriter, destinationTensors,
-                                        innerMostLoop.getRegionIterArgs());
-  }
+    return failure();
 
   tilingResult.replacements = *replacementOr;
 
