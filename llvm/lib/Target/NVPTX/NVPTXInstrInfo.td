@@ -248,90 +248,94 @@ multiclass ADD_SUB_INT_CARRY<string OpcStr, SDNode OpNode> {
 // This multiclass should be used for nodes that cannot be folded into FMAs.
 // For nodes that can be folded into FMAs (i.e. adds and muls), use
 // F3_fma_component.
-multiclass F3<string OpcStr, SDNode OpNode> {
+multiclass F3<string OpcStr, SDNode OpNode, list<Predicate> Preds = []> {
    def f64rr :
      NVPTXInst<(outs Float64Regs:$dst),
                (ins Float64Regs:$a, Float64Regs:$b),
                !strconcat(OpcStr, ".f64 \t$dst, $a, $b;"),
-               [(set Float64Regs:$dst, (OpNode Float64Regs:$a, Float64Regs:$b))]>;
+               [(set Float64Regs:$dst, (OpNode Float64Regs:$a, Float64Regs:$b))]>,
+               Requires<Preds>;
    def f64ri :
      NVPTXInst<(outs Float64Regs:$dst),
                (ins Float64Regs:$a, f64imm:$b),
                !strconcat(OpcStr, ".f64 \t$dst, $a, $b;"),
-               [(set Float64Regs:$dst, (OpNode Float64Regs:$a, fpimm:$b))]>;
+               [(set Float64Regs:$dst, (OpNode Float64Regs:$a, fpimm:$b))]>,
+               Requires<Preds>;
    def f32rr_ftz :
      NVPTXInst<(outs Float32Regs:$dst),
                (ins Float32Regs:$a, Float32Regs:$b),
                !strconcat(OpcStr, ".ftz.f32 \t$dst, $a, $b;"),
                [(set Float32Regs:$dst, (OpNode Float32Regs:$a, Float32Regs:$b))]>,
-               Requires<[doF32FTZ]>;
+               Requires<!listconcat(Preds, [doF32FTZ])>;
    def f32ri_ftz :
      NVPTXInst<(outs Float32Regs:$dst),
                (ins Float32Regs:$a, f32imm:$b),
                !strconcat(OpcStr, ".ftz.f32 \t$dst, $a, $b;"),
                [(set Float32Regs:$dst, (OpNode Float32Regs:$a, fpimm:$b))]>,
-               Requires<[doF32FTZ]>;
+               Requires<!listconcat(Preds, [doF32FTZ])>;
    def f32rr :
      NVPTXInst<(outs Float32Regs:$dst),
                (ins Float32Regs:$a, Float32Regs:$b),
                !strconcat(OpcStr, ".f32 \t$dst, $a, $b;"),
-               [(set Float32Regs:$dst, (OpNode Float32Regs:$a, Float32Regs:$b))]>;
+               [(set Float32Regs:$dst, (OpNode Float32Regs:$a, Float32Regs:$b))]>,
+               Requires<Preds>;
    def f32ri :
      NVPTXInst<(outs Float32Regs:$dst),
                (ins Float32Regs:$a, f32imm:$b),
                !strconcat(OpcStr, ".f32 \t$dst, $a, $b;"),
-               [(set Float32Regs:$dst, (OpNode Float32Regs:$a, fpimm:$b))]>;
+               [(set Float32Regs:$dst, (OpNode Float32Regs:$a, fpimm:$b))]>,
+               Requires<Preds>;
 
    def f16rr_ftz :
      NVPTXInst<(outs Int16Regs:$dst),
                (ins Int16Regs:$a, Int16Regs:$b),
                !strconcat(OpcStr, ".ftz.f16 \t$dst, $a, $b;"),
                [(set Int16Regs:$dst, (OpNode (f16 Int16Regs:$a), (f16 Int16Regs:$b)))]>,
-               Requires<[useFP16Math, doF32FTZ]>;
+               Requires<!listconcat(Preds, [useFP16Math, doF32FTZ])>;
    def f16rr :
      NVPTXInst<(outs Int16Regs:$dst),
                (ins Int16Regs:$a, Int16Regs:$b),
                !strconcat(OpcStr, ".f16 \t$dst, $a, $b;"),
                [(set Int16Regs:$dst, (OpNode (f16 Int16Regs:$a), (f16 Int16Regs:$b)))]>,
-               Requires<[useFP16Math]>;
+               Requires<!listconcat(Preds, [useFP16Math])>;
 
    def f16x2rr_ftz :
      NVPTXInst<(outs Int32Regs:$dst),
                (ins Int32Regs:$a, Int32Regs:$b),
                !strconcat(OpcStr, ".ftz.f16x2 \t$dst, $a, $b;"),
                [(set Int32Regs:$dst, (OpNode (v2f16 Int32Regs:$a), (v2f16 Int32Regs:$b)))]>,
-               Requires<[useFP16Math, doF32FTZ]>;
+               Requires<!listconcat(Preds, [useFP16Math, doF32FTZ])>;
    def f16x2rr :
      NVPTXInst<(outs Int32Regs:$dst),
                (ins Int32Regs:$a, Int32Regs:$b),
                !strconcat(OpcStr, ".f16x2 \t$dst, $a, $b;"),
                [(set Int32Regs:$dst, (OpNode (v2f16 Int32Regs:$a), (v2f16 Int32Regs:$b)))]>,
-               Requires<[useFP16Math]>;
+               Requires<!listconcat(Preds, [useFP16Math])>;
    def bf16rr_ftz :
      NVPTXInst<(outs Int16Regs:$dst),
                (ins Int16Regs:$a, Int16Regs:$b),
                !strconcat(OpcStr, ".ftz.bf16 \t$dst, $a, $b;"),
                [(set Int16Regs:$dst, (OpNode (bf16 Int16Regs:$a), (bf16 Int16Regs:$b)))]>,
-               Requires<[hasBF16Math, doF32FTZ]>;
+               Requires<!listconcat(Preds, [hasBF16Math, doF32FTZ])>;
    def bf16rr :
      NVPTXInst<(outs Int16Regs:$dst),
                (ins Int16Regs:$a, Int16Regs:$b),
                !strconcat(OpcStr, ".bf16 \t$dst, $a, $b;"),
                [(set Int16Regs:$dst, (OpNode (bf16 Int16Regs:$a), (bf16 Int16Regs:$b)))]>,
-               Requires<[hasBF16Math]>;
+               Requires<!listconcat(Preds, [hasBF16Math])>;
 
    def bf16x2rr_ftz :
      NVPTXInst<(outs Int32Regs:$dst),
                (ins Int32Regs:$a, Int32Regs:$b),
                !strconcat(OpcStr, ".ftz.bf16x2 \t$dst, $a, $b;"),
                [(set Int32Regs:$dst, (OpNode (v2bf16 Int32Regs:$a), (v2bf16 Int32Regs:$b)))]>,
-               Requires<[hasBF16Math, doF32FTZ]>;
+               Requires<!listconcat(Preds, [hasBF16Math, doF32FTZ])>;
    def bf16x2rr :
      NVPTXInst<(outs Int32Regs:$dst),
                (ins Int32Regs:$a, Int32Regs:$b),
                !strconcat(OpcStr, ".bf16x2 \t$dst, $a, $b;"),
                [(set Int32Regs:$dst, (OpNode (v2bf16 Int32Regs:$a), (v2bf16 Int32Regs:$b)))]>,
-               Requires<[hasBF16Math]>;
+               Requires<!listconcat(Preds, [hasBF16Math])>;
 }
 
 // Template for instructions which take three FP args.  The
@@ -1106,8 +1110,8 @@ defm FMUL : F3_fma_component<"mul", fmul>;
 defm FMIN : F3<"min", fminnum>;
 defm FMAX : F3<"max", fmaxnum>;
 // Note: min.NaN.f64 and max.NaN.f64 do not actually exist.
-defm FMINNAN : F3<"min.NaN", fminimum>;
-defm FMAXNAN : F3<"max.NaN", fmaximum>;
+defm FMINNAN : F3<"min.NaN", fminimum, [hasSM<80>]>;
+defm FMAXNAN : F3<"max.NaN", fmaximum, [hasSM<80>]>;
 
 defm FABS  : F2<"abs", fabs>;
 defm FNEG  : F2<"neg", fneg>;
