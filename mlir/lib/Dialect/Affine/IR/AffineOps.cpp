@@ -730,7 +730,7 @@ static std::optional<int64_t> getUpperBound(Value iv) {
 /// is guaranteed to be less than or equal to it.
 static std::optional<int64_t> getUpperBound(AffineExpr expr, unsigned numDims,
                                             unsigned numSymbols,
-                                            ArrayRef<Value> operands) {
+                                            ValueRange operands) {
   // Get the constant lower or upper bounds on the operands.
   SmallVector<std::optional<int64_t>> constLowerBounds, constUpperBounds;
   constLowerBounds.reserve(operands.size());
@@ -742,6 +742,23 @@ static std::optional<int64_t> getUpperBound(AffineExpr expr, unsigned numDims,
 
   if (auto constExpr = dyn_cast<AffineConstantExpr>(expr))
     return constExpr.getValue();
+
+  if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+    Value operand = operands[dimExpr.getPosition()];
+    if (auto minOp = operand.getDefiningOp<affine::AffineMinOp>()) {
+      std::optional<int64_t> smallestConstVal;
+      for (auto expr : minOp.getMap().getResults()) {
+        auto constExpr = dyn_cast<AffineConstantExpr>(expr);
+        if (!constExpr)
+          continue;
+        smallestConstVal =
+            (smallestConstVal
+                 ? std::min(smallestConstVal.value(), constExpr.getValue())
+                 : constExpr.getValue());
+      }
+      return smallestConstVal;
+    }
+  }
 
   return getBoundForAffineExpr(expr, numDims, numSymbols, constLowerBounds,
                                constUpperBounds,
@@ -870,6 +887,11 @@ static void simplifyExprAndOperands(AffineExpr &expr, unsigned numDims,
       (getLargestKnownDivisor(lhs, operands) % rhsConstVal == 0 &&
        binExpr.getKind() == AffineExprKind::Mod)) {
     expr = getAffineConstantExpr(0, expr.getContext());
+  }
+
+  if (lhsUbConst && binExpr.getKind() == AffineExprKind::CeilDiv &&
+      lhsUbConst.value() <= rhsConstVal) {
+    expr = getAffineConstantExpr(1, expr.getContext());
   }
 }
 
