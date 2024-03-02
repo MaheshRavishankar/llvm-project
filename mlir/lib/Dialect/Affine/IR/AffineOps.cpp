@@ -648,59 +648,6 @@ static int64_t getLargestKnownDivisor(AffineExpr e, ArrayRef<Value> operands) {
   return operandDivisor;
 }
 
-/// Check if `e` is known to be: 0 <= `e` < `k`. Handles the simple cases of `e`
-/// being an affine dim expression or a constant.
-static bool isNonNegativeBoundedBy(AffineExpr e, ArrayRef<Value> operands,
-                                   int64_t k) {
-  if (auto constExpr = dyn_cast<AffineConstantExpr>(e)) {
-    int64_t constVal = constExpr.getValue();
-    return constVal >= 0 && constVal < k;
-  }
-  auto dimExpr = dyn_cast<AffineDimExpr>(e);
-  if (!dimExpr)
-    return false;
-  Value operand = operands[dimExpr.getPosition()];
-  // TODO: With the right accessors, this can be extended to
-  // LoopLikeOpInterface.
-  if (AffineForOp forOp = getForInductionVarOwner(operand)) {
-    if (forOp.hasConstantLowerBound() && forOp.getConstantLowerBound() >= 0 &&
-        forOp.hasConstantUpperBound() && forOp.getConstantUpperBound() <= k) {
-      return true;
-    }
-  }
-
-  // We don't consider other cases like `operand` being defined by a constant or
-  // an affine.apply op since such cases will already be handled by other
-  // patterns and propagation of loop IVs or constant would happen.
-  return false;
-}
-
-/// Check if expression `e` is of the form d*e_1 + e_2 where 0 <= e_2 < d.
-/// Set `div` to `d`, `quotientTimesDiv` to e_1 and `rem` to e_2 if the
-/// expression is in that form.
-static bool isQTimesDPlusR(AffineExpr e, ArrayRef<Value> operands, int64_t &div,
-                           AffineExpr &quotientTimesDiv, AffineExpr &rem) {
-  auto bin = dyn_cast<AffineBinaryOpExpr>(e);
-  if (!bin || bin.getKind() != AffineExprKind::Add)
-    return false;
-
-  AffineExpr llhs = bin.getLHS();
-  AffineExpr rlhs = bin.getRHS();
-  div = getLargestKnownDivisor(llhs, operands);
-  if (isNonNegativeBoundedBy(rlhs, operands, div)) {
-    quotientTimesDiv = llhs;
-    rem = rlhs;
-    return true;
-  }
-  div = getLargestKnownDivisor(rlhs, operands);
-  if (isNonNegativeBoundedBy(llhs, operands, div)) {
-    quotientTimesDiv = rlhs;
-    rem = llhs;
-    return true;
-  }
-  return false;
-}
-
 /// Gets the constant lower bound on an `iv`.
 static std::optional<int64_t> getLowerBound(Value iv) {
   AffineForOp forOp = getForInductionVarOwner(iv);
@@ -770,7 +717,7 @@ static std::optional<int64_t> getUpperBound(AffineExpr expr, unsigned numDims,
 /// is guaranteed to be less than or equal to it.
 static std::optional<int64_t> getLowerBound(AffineExpr expr, unsigned numDims,
                                             unsigned numSymbols,
-                                            ArrayRef<Value> operands) {
+                                            ValueRange operands) {
   // Get the constant lower or upper bounds on the operands.
   SmallVector<std::optional<int64_t>> constLowerBounds, constUpperBounds;
   constLowerBounds.reserve(operands.size());
@@ -783,12 +730,90 @@ static std::optional<int64_t> getLowerBound(AffineExpr expr, unsigned numDims,
   std::optional<int64_t> lowerBound;
   if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
     lowerBound = constExpr.getValue();
-  } else {
-    lowerBound = getBoundForAffineExpr(expr, numDims, numSymbols,
-                                       constLowerBounds, constUpperBounds,
-                                       /*isUpper=*/false);
   }
+
+  if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+    Value operand = operands[dimExpr.getPosition()];
+    if (auto minOp = operand.getDefiningOp<AffineMinOp>()) {
+      auto map = minOp.getMap();
+      unsigned minOpNumDims = map.getNumDims();
+      unsigned minOpNumSymbols = map.getNumSymbols();
+      for (auto minExpr : map.getResults()) {
+        std::optional<int64_t> exprLowerBound = getLowerBound(
+            minExpr, minOpNumDims, minOpNumSymbols, minOp.getOperands());
+        // If there is no lower bound for any expression, the entire
+        // min expression has no lower bound.
+        if (!exprLowerBound)
+          return std::nullopt;
+        lowerBound =
+            (lowerBound ? std::min(lowerBound.value(), exprLowerBound.value())
+                        : exprLowerBound.value());
+      }
+    }
+    return lowerBound;
+  }
+
+  lowerBound = getBoundForAffineExpr(expr, numDims, numSymbols,
+                                     constLowerBounds, constUpperBounds,
+                                     /*isUpper=*/false);
   return lowerBound;
+}
+
+/// Check if `e` is known to be: 0 <= `e` < `k`. Handles the simple cases of `e`
+/// being an affine dim expression or a constant.
+static bool isNonNegativeBoundedBy(AffineExpr e, unsigned numDims,
+                                   unsigned numSymbols, ValueRange operands,
+                                   int64_t k) {
+  if (auto constExpr = dyn_cast<AffineConstantExpr>(e)) {
+    int64_t constVal = constExpr.getValue();
+    return constVal >= 0 && constVal < k;
+  }
+  auto dimExpr = dyn_cast<AffineDimExpr>(e);
+  if (!dimExpr)
+    return false;
+  Value operand = operands[dimExpr.getPosition()];
+  // TODO: With the right accessors, this can be extended to
+  // LoopLikeOpInterface.
+  if (AffineForOp forOp = getForInductionVarOwner(operand)) {
+    if (forOp.hasConstantLowerBound() && forOp.getConstantLowerBound() >= 0 &&
+        forOp.hasConstantUpperBound() && forOp.getConstantUpperBound() <= k) {
+      return true;
+    }
+  }
+
+  std::optional<int64_t> lowerBound =
+      getLowerBound(e, numDims, numSymbols, operands);
+  std::optional<int64_t> upperBound =
+      getUpperBound(e, numDims, numSymbols, operands);
+  return lowerBound && upperBound && lowerBound.value() >= 0 &&
+         upperBound.value() <= k;
+}
+
+/// Check if expression `e` is of the form d*e_1 + e_2 where 0 <= e_2 < d.
+/// Set `div` to `d`, `quotientTimesDiv` to e_1 and `rem` to e_2 if the
+/// expression is in that form.
+static bool isQTimesDPlusR(AffineExpr e, unsigned numDims, unsigned numSymbols,
+                           ArrayRef<Value> operands, int64_t &div,
+                           AffineExpr &quotientTimesDiv, AffineExpr &rem) {
+  auto bin = dyn_cast<AffineBinaryOpExpr>(e);
+  if (!bin || bin.getKind() != AffineExprKind::Add)
+    return false;
+
+  AffineExpr llhs = bin.getLHS();
+  AffineExpr rlhs = bin.getRHS();
+  div = getLargestKnownDivisor(llhs, operands);
+  if (isNonNegativeBoundedBy(rlhs, numDims, numSymbols, operands, div)) {
+    quotientTimesDiv = llhs;
+    rem = rlhs;
+    return true;
+  }
+  div = getLargestKnownDivisor(rlhs, operands);
+  if (isNonNegativeBoundedBy(llhs, numDims, numSymbols, operands, div)) {
+    quotientTimesDiv = rlhs;
+    rem = llhs;
+    return true;
+  }
+  return false;
 }
 
 /// Simplify `expr` while exploiting information from the values in `operands`.
@@ -867,7 +892,8 @@ static void simplifyExprAndOperands(AffineExpr &expr, unsigned numDims,
   // And when k % c == 0, (e_1 + e_2) mod c can be simplified to e_2 mod c.
   AffineExpr quotientTimesDiv, rem;
   int64_t divisor;
-  if (isQTimesDPlusR(lhs, operands, divisor, quotientTimesDiv, rem)) {
+  if (isQTimesDPlusR(lhs, numDims, numSymbols, operands, divisor,
+                     quotientTimesDiv, rem)) {
     if (rhsConstVal % divisor == 0 &&
         binExpr.getKind() == AffineExprKind::FloorDiv) {
       expr = quotientTimesDiv.floorDiv(rhsConst);
@@ -882,15 +908,15 @@ static void simplifyExprAndOperands(AffineExpr &expr, unsigned numDims,
   // bounded or is a known multiple of RHS constant.
   // lhs floordiv c -> 0 if 0 <= lhs < c,
   // lhs mod c -> 0 if lhs % c = 0.
-  if ((isNonNegativeBoundedBy(lhs, operands, rhsConstVal) &&
+  if ((isNonNegativeBoundedBy(lhs, numDims, numSymbols, operands,
+                              rhsConstVal) &&
        binExpr.getKind() == AffineExprKind::FloorDiv) ||
       (getLargestKnownDivisor(lhs, operands) % rhsConstVal == 0 &&
        binExpr.getKind() == AffineExprKind::Mod)) {
     expr = getAffineConstantExpr(0, expr.getContext());
   }
 
-  if (lhsUbConst && binExpr.getKind() == AffineExprKind::CeilDiv &&
-      lhsUbConst.value() <= rhsConstVal) {
+  if (isNonNegativeBoundedBy(lhs, numDims, numSymbols, operands, rhsConstVal)) {
     expr = getAffineConstantExpr(1, expr.getContext());
   }
 }
