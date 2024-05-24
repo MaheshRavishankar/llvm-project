@@ -86,7 +86,7 @@ verifyTileSizeOptions(RewriterBase &rewriter, Location loc,
   if (!options.interchangeVector.empty()) {
     if (!isPermutationVector(options.interchangeVector)) {
       return rewriter.notifyMatchFailure(
-          loc, "invalid intechange vector, not a permutation of the entire "
+          loc, "invalid interchange vector, not a permutation of the entire "
                "iteration space");
     }
   }
