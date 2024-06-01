@@ -270,7 +270,7 @@ getTileOffsetAndSizes(RewriterBase &rewriter, Location loc, ValueRange ivs,
 
       // Non-tiled cases, set the offset and size to the
       // `loopRange.offset/size`.
-      if (isConstantIntValue(nt, 0) || isConstantIntValue(nt, 1)) {
+      if (isConstantIntValue(nt, 0)) {
         offsets.push_back(loopRange.offset);
         sizes.push_back(loopRange.size);
         continue;
