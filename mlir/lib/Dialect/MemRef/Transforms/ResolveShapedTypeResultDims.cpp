@@ -19,6 +19,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Interfaces/CastInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -73,6 +74,26 @@ struct DimOfShapedTypeOpInterface : public OpRewritePattern<OpTy> {
   }
 };
 
+static LogicalResult
+reifyResultShapesForCastLikeOps(RewriterBase &rewriter, CastOpInterface castOp,
+                                ReifiedRankedShapedTypeDims &resultShapes) {
+  if (!llvm::all_of(castOp->getResultTypes(), [](Type t) {
+        return isa<RankedTensorType, MemRefType>(t);
+      })) {
+    return failure();
+  }
+  if (castOp->getNumOperands() != castOp->getNumResults()) {
+    return failure();
+  }
+  for (auto [index, result] : llvm::enumerate(castOp->getResults())) {
+    auto operand = castOp->getOperand(index);
+    SmallVector<OpFoldResult> operandShape =
+        tensor::getMixedSizes(rewriter, castOp.getLoc(), operand);
+    resultShapes.emplace_back(std::move(operandShape));
+  };
+  return success();
+}
+
 /// Fold dim of an operation that implements the InferShapedTypeOpInterface
 template <typename OpTy>
 struct DimOfReifyRankedShapedTypeOpInterface : public OpRewritePattern<OpTy> {
@@ -90,6 +111,13 @@ struct DimOfReifyRankedShapedTypeOpInterface : public OpRewritePattern<OpTy> {
       return failure();
 
     ReifiedRankedShapedTypeDims reifiedResultShapes;
+
+    // Handle cast-like ops.
+    if (auto castOp = dyn_cast<CastOpInterface>(dimValue.getOwner())) {
+      return reifyResultShapesForCastLikeOps(rewriter, castOp,
+                                             reifiedResultShapes);
+    }
+
     if (failed(reifyResultShapes(rewriter, dimValue.getOwner(),
                                  reifiedResultShapes)))
       return failure();
