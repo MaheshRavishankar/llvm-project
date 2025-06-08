@@ -2794,9 +2794,22 @@ DiagnosedSilenceableFailure transform::TileReductionUsingForOp::applyToOne(
         target->getLoc(),
         "Operation should implement PartialReductionOpInterface");
   }
-  FailureOr<scf::SCFTilingResult> result = scf::tileReductionUsingScf(
-      rewriter, partialReductionOp,
-      getAsOpFoldResult(rewriter.getI64ArrayAttr(getTileSizes())));
+
+  SmallVector<unsigned> reductionDims;
+  for (auto [idx, iteratorType] :
+       llvm::enumerate(partialReductionOp.getLoopIteratorTypes())) {
+    if (iteratorType == utils::IteratorType::reduction)
+      reductionDims.push_back(idx);
+  }
+
+  scf::SCFTilingOptions options;
+  options.setLoopType(scf::SCFTilingOptions::LoopType::ForOp);
+  options.setReductionTilingStrategy(
+      ReductionTilingStrategy::PartialReductionOuterReduction);
+  options.setTileSizes(getAsOpFoldResult(rewriter.getI64ArrayAttr(getTileSizes())));
+  options.setReductionDims(reductionDims);
+  FailureOr<scf::SCFTilingResult> result =
+      scf::tileUsingSCF(rewriter, partialReductionOp, options);
 
   if (failed(result))
     return emitDefaultSilenceableFailure(target);

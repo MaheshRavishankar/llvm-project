@@ -575,35 +575,20 @@ createInitialTensorsForTiling(RewriterBase &rewriter, TilingInterface op,
                               const scf::SCFTilingOptions &options) {
   SmallVector<Value> initTensors;
   Location loc = op->getLoc();
-  switch (options.reductionStrategy) {
-  case scf::SCFTilingOptions::ReductionTilingStrategy::FullReduction:
+  if (options.reductionStrategy == ReductionTilingStrategy::FullReduction) {
     if (failed(tensor::getOrCreateDestinations(rewriter, loc, op, initTensors)))
       return failure();
     return initTensors;
-  case scf::SCFTilingOptions::ReductionTilingStrategy::
-      PartialReductionOuterReduction: {
-    auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
-    if (!redOp) {
-      return rewriter.notifyMatchFailure(
-          op, "PartialReductionOuterReduction tiling strategy is only supported"
-              "for operations implementing PartialReductionOpInterface");
-    }
-    // Get reduction dimensions.
-    // TODO: PartialReductionOpInterface should really query TilingInterface
-    // itself and find reduction dimensions.
-    SmallVector<int> reductionDims;
-    for (auto [idx, iteratorType] :
-         llvm::enumerate(op.getLoopIteratorTypes())) {
-      if (iteratorType == utils::IteratorType::reduction)
-        reductionDims.push_back(idx);
-    }
-    return redOp.generateInitialTensorForPartialReduction(
-        rewriter, loc, tileSizes, reductionDims);
   }
-  default:
-    return rewriter.notifyMatchFailure(op,
-                                       "unhandled reduction tiling strategy");
+
+  auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
+  if (!redOp) {
+    return rewriter.notifyMatchFailure(
+        op, "PartialReductionOuterReduction tiling strategy is only supported"
+            "for operations implementing PartialReductionOpInterface");
   }
+  return redOp.generateInitialTensorForPartialReduction(
+      rewriter, loc, tileSizes, options.reductionDims, options.partialReductionPayload);
 }
 
 static FailureOr<TilingResult>
@@ -611,108 +596,59 @@ getTiledImplementation(RewriterBase &rewriter, TilingInterface op,
                        ValueRange regionIterArg, ArrayRef<OpFoldResult> offsets,
                        ArrayRef<OpFoldResult> sizes,
                        const scf::SCFTilingOptions &options) {
-  switch (options.reductionStrategy) {
-  case scf::SCFTilingOptions::ReductionTilingStrategy::FullReduction:
+  if (options.reductionStrategy == ReductionTilingStrategy::FullReduction) {
     return op.getTiledImplementation(rewriter, offsets, sizes);
-  case scf::SCFTilingOptions::ReductionTilingStrategy::
-      PartialReductionOuterReduction: {
-    auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
-    if (!redOp) {
-      return rewriter.notifyMatchFailure(
-          op, "PartialReductionOuterReduction tiling strategy is only "
-              "supported for operations "
-              "implementing PartialReductionOpInterface");
-    }
-    // Get reduction dimensions.
-    // TODO: PartialReductionOpInterface should really query TilingInterface
-    // itself and find reduction dimensions.
-    SmallVector<int> reductionDims;
-    for (auto [idx, iteratorType] :
-         llvm::enumerate(op.getLoopIteratorTypes())) {
-      if (iteratorType == utils::IteratorType::reduction)
-        reductionDims.push_back(idx);
-    }
-    return redOp.tileToPartialReduction(rewriter, op.getLoc(), regionIterArg,
-                                        offsets, sizes, reductionDims);
   }
-  default:
-    return rewriter.notifyMatchFailure(op,
-                                       "unhandled reduction tiling strategy");
+
+  auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
+  if (!redOp) {
+    return rewriter.notifyMatchFailure(
+        op, "PartialReductionOuterReduction tiling strategy is only "
+            "supported for operations "
+            "implementing PartialReductionOpInterface");
   }
+  return redOp.tileToPartialReduction(
+      rewriter, op.getLoc(), options.reductionStrategy, regionIterArg, offsets,
+      sizes, options.reductionDims, options.partialReductionPayload);
 }
 
-static LogicalResult
-getResultTilePosition(RewriterBase &rewriter, int64_t index, Value tiledResult,
-                      TilingInterface op, ArrayRef<OpFoldResult> offsets,
-                      ArrayRef<OpFoldResult> sizes,
-                      SmallVector<OpFoldResult> &resultOffset,
-                      SmallVector<OpFoldResult> &resultSize,
-                      const scf::SCFTilingOptions &options) {
+static LogicalResult getResultTilePosition(
+    RewriterBase &rewriter, int64_t index, Value tiledResult,
+    TilingInterface op, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, SmallVector<OpFoldResult> &resultOffset,
+    SmallVector<OpFoldResult> &resultSize, const scf::SCFTilingOptions &options) {
 
-  switch (options.reductionStrategy) {
-  case scf::SCFTilingOptions::ReductionTilingStrategy::FullReduction:
+  if (options.reductionStrategy == ReductionTilingStrategy::FullReduction) {
     return op.getResultTilePosition(rewriter, index, offsets, sizes,
                                     resultOffset, resultSize);
-  case scf::SCFTilingOptions::ReductionTilingStrategy::
-      PartialReductionOuterReduction: {
-    auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
-    if (!redOp) {
-      return rewriter.notifyMatchFailure(
-          op, "PartialReductionOuterReduction tiling strategy is only supported"
-              "for operations implementing PartialReductionOpInterface");
-    }
-    // Get reduction dimensions.
-    // TODO: PartialReductionOpInterface should really query TilingInterface
-    // itself and find reduction dimensions.
-    SmallVector<int> reductionDims;
-    for (auto [idx, iteratorType] :
-         llvm::enumerate(op.getLoopIteratorTypes())) {
-      if (iteratorType == utils::IteratorType::reduction)
-        reductionDims.push_back(idx);
-    }
-    return redOp.getPartialResultTilePosition(rewriter, index, offsets, sizes,
-                                              resultOffset, resultSize,
-                                              reductionDims);
   }
-  default:
-    return rewriter.notifyMatchFailure(op,
-                                       "unhandled reduction tiling strategy");
+  auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
+  if (!redOp) {
+    return rewriter.notifyMatchFailure(
+        op, "PartialReductionOuterReduction tiling strategy is only supported"
+            "for operations implementing PartialReductionOpInterface");
   }
+  return redOp.getPartialResultTilePosition(
+      rewriter, index, offsets, sizes, options.reductionDims,
+      options.partialReductionPayload, resultOffset, resultSize);
 }
 
 static FailureOr<MergeResult>
 mergeTilingResults(RewriterBase &rewriter, TilingInterface op,
                    ValueRange partialResults,
                    const scf::SCFTilingOptions &options) {
-  switch (options.reductionStrategy) {
-  case scf::SCFTilingOptions::ReductionTilingStrategy::FullReduction:
-    // No need to merge results for reduction tiling strategy.
-    return MergeResult{{}, partialResults};
-  case scf::SCFTilingOptions::ReductionTilingStrategy::
-      PartialReductionOuterReduction: {
-    auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
-    if (!redOp) {
-      return rewriter.notifyMatchFailure(
-          op, "PartialReductionOuterReduction tiling strategy is only "
-              "supported for operations "
-              "implementing PartialReductionOpInterface");
-    }
-    // Get reduction dimensions.
-    // TODO: PartialReductionOpInterface should really query TilingInterface
-    // itself and find reduction dimensions.
-    SmallVector<int> reductionDims;
-    for (auto [idx, iteratorType] :
-         llvm::enumerate(op.getLoopIteratorTypes())) {
-      if (iteratorType == utils::IteratorType::reduction)
-        reductionDims.push_back(idx);
-    }
-    return redOp.mergeReductions(rewriter, op.getLoc(), partialResults,
-                                 reductionDims);
+  assert(options.reductionStrategy != ReductionTilingStrategy::FullReduction &&
+         "expected merge to be called for only partial reduction cases");
+
+  auto redOp = dyn_cast<PartialReductionOpInterface>(op.getOperation());
+  if (!redOp) {
+    return rewriter.notifyMatchFailure(
+        op, "PartialReductionOuterReduction tiling strategy is only "
+            "supported for operations "
+            "implementing PartialReductionOpInterface");
   }
-  default:
-    return rewriter.notifyMatchFailure(op,
-                                       "unhandled reduction tiling strategy");
-  }
+  return redOp.mergeReductions(rewriter, op.getLoc(), partialResults,
+                               options.reductionDims, options.partialReductionPayload);
 }
 
 /// Append the specified additional `newInitOperands` operands to the
@@ -949,7 +885,8 @@ mlir::scf::tileUsingSCF(RewriterBase &rewriter, TilingInterface op,
 
   // Check if it is safe to tile. This is hold over from previous iterations
   // of tile to for-all. Consider dropping it.
-  if (options.loopType == scf::SCFTilingOptions::LoopType::ForallOp) {
+  if (options.loopType == scf::SCFTilingOptions::LoopType::ForallOp &&
+      options.reductionStrategy == ReductionTilingStrategy::FullReduction) {
     checkSafeToTileToForall(op, tileSizes, numThreads);
   }
 
@@ -1063,17 +1000,16 @@ mlir::scf::tileUsingSCF(RewriterBase &rewriter, TilingInterface op,
     // untiled op.
     return scf::SCFTilingResult{tilingResult->tiledOps, initTensors, loops,
                                 tilingResult->tiledValues,
-                                tilingResult->generatedSlices};
+                                tilingResult->generatedSlices, {}};
   }
 
   auto loopResults = llvm::map_to_vector(loops.front()->getResults(),
                                          [](OpResult r) -> Value { return r; });
 
   // For the full reduction case, there is nothing more to do.
-  if (options.reductionStrategy ==
-      scf::SCFTilingOptions::ReductionTilingStrategy::FullReduction) {
+  if (options.reductionStrategy == ReductionTilingStrategy::FullReduction) {
     return scf::SCFTilingResult{tilingResult->tiledOps, initTensors, loops,
-                                loopResults, tilingResult->generatedSlices};
+                                loopResults, tilingResult->generatedSlices, {}};
   }
 
   // The results of the loop needs to be merged.
@@ -1098,8 +1034,7 @@ mlir::scf::tileReductionUsingScf(RewriterBase &b,
   scf::SCFTilingOptions options;
   options.setLoopType(scf::SCFTilingOptions::LoopType::ForOp);
   options.setReductionTilingStrategy(
-      scf::SCFTilingOptions::ReductionTilingStrategy::
-          PartialReductionOuterReduction);
+      ReductionTilingStrategy::PartialReductionOuterReduction);
   options.setTileSizes(tileSize);
   return tileUsingSCF(b, op, options);
 }
