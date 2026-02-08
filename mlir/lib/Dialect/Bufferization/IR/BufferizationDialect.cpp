@@ -110,9 +110,6 @@ LogicalResult BufferizationDialect::verifyRegionArgAttribute(
     if (!isa<FunctionOpInterface>(op))
       return op->emitError() << "expected '" << kWritableAttrName
                              << "' to be used on function-like operations";
-    if (cast<FunctionOpInterface>(op).isExternal())
-      return op->emitError() << "'" << kWritableAttrName
-                             << "' is invalid on external functions";
     return success();
   }
   if (attr.getName() == kBufferAccessAttrName) {
